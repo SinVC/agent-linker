@@ -114,7 +114,8 @@ try {
     $sourceReceipt.installed_by = "aglink-installer.ps1"
     $sourceReceipt.install_dir = $installRoot
     $sourceReceipt.installed_at = (Get-Date).ToUniversalTime().ToString("o")
-    $sourceReceipt.archive_sha256 = $actual
+    $sourceReceipt |
+        Add-Member -NotePropertyName "archive_sha256" -NotePropertyValue $actual -Force
     $sourceReceipt |
         ConvertTo-Json -Depth 8 |
         Set-Content -LiteralPath $receiptPath -Encoding UTF8
@@ -128,6 +129,7 @@ try {
         }
     }
 
+    & (Join-Path $binDir "aglink.exe") db migrate
     & (Join-Path $binDir "aglink.exe") --verbose doctor
 } finally {
     if (Test-Path -LiteralPath $tempRoot) {
