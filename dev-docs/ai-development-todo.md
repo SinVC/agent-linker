@@ -231,11 +231,21 @@
 
 目标：从 MVP 可用推进到可发布状态。
 
-- [ ] 在 Windows 环境验证 Broker 默认路径，不允许直接创建后自动 fallback。
-- [ ] 在 Linux/macOS 或等价 CI 环境验证标准库 symlink provider。
-- [ ] 验证数据库默认路径、portable 模式和环境变量覆盖在目标平台上的行为。
-- [ ] 建立发布前检查清单：构建、测试、格式化、doctor、自测临时项目。
-- [ ] 准备版本号、变更记录和安装说明。
+- [x] 在 Windows 环境验证 Broker 默认路径，不允许直接创建后自动 fallback。
+- [x] 在 Linux/macOS 或等价 CI 环境验证标准库 symlink provider。
+- [x] 验证数据库默认路径、portable 模式和环境变量覆盖在目标平台上的行为。
+- [x] 建立发布前检查清单：构建、测试、格式化、doctor、自测临时项目。
+- [x] 准备版本号、变更记录和安装说明。
+
+阶段 8 验证备注（2026-09-15）：
+
+- 已运行 Windows 验证：`cargo fmt --check`、`git diff --check`、`cargo check --locked`、`cargo test --locked`，均通过；`cargo test --locked` 结果 60 个测试通过，0 个失败，其中覆盖 Windows 默认 provider 为 `windows-broker`、Broker 错误码映射、数据库路径注入测试和核心 link/status/unlink 流程。
+- 已运行 Windows CLI 验证：`cargo run --locked -- --help` 成功。
+- 已在临时 Windows 项目中使用临时 `AGLINK_DATA_DIR` 运行 `aglink db migrate`、`aglink init`、`aglink status --json`、`aglink --verbose doctor`；`CLAUDE.md` 与 `.claude/skills` 均为真实 `SymbolicLink`，manifest 与 JSON status 均记录 `provider_backend = "windows-broker"`，doctor 报告 `symlink-backend windows-broker` 且 `windows-broker available`。
+- 已运行 Windows `aglink db path` smoke test：默认路径解析到 `%LOCALAPPDATA%\agent-linker\agent-linker.db` 且 reason 为 `platform default`；设置 `AGLINK_DATA_DIR` 后解析到该目录下 `agent-linker.db`；复制临时 `aglink.exe` 并在同目录放置 `agent-linker.db` 后解析为 portable database。
+- 已运行本机 WSL2 Ubuntu Linux 专项验证：`cargo test --locked core::symlink::tests::std_provider_uses_unix_symlinks`、`cargo test --locked core::symlink::tests::default_provider_uses_std_backend_off_windows`、`cargo test --locked core::db::tests::database_path_uses_platform_defaults`，均通过。WSL 比 Codex 云端更方便用于本阶段 Linux 验证，因为可在同一工作副本附近验证真实 Unix symlink 行为；Codex 云端更适合作为后续 CI/干净环境复核。
+- macOS 暂无测试环境；发布说明和 README 已明确 macOS 走 Unix 标准库代码路径但尚未实机 smoke test，不标为已验证平台。
+- 已新增 [RELEASE_CHECKLIST.md](../RELEASE_CHECKLIST.md) 与 [CHANGELOG.md](../CHANGELOG.md)，并在 README 中标明当前 MVP 版本 `0.1.0`、安装方式和平台验证状态。
 
 验收：主要平台路径均经过实际或明确标注的专项验证；发布说明不夸大未验证能力。
 

@@ -4,8 +4,10 @@ use std::{
     collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(windows)]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::core::{
     db,

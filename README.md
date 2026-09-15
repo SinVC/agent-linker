@@ -23,6 +23,8 @@
 
 ## 📦 Installation & Configuration (安装配置)
 
+当前 MVP 版本：`0.1.0`。发布前检查清单见 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)，变更记录见 [CHANGELOG.md](CHANGELOG.md)。
+
 ### 1. 基础安装 (所有系统)
 
 确保你的系统已安装 [Rust 与 Cargo](https://rustup.rs/) 环境。在本项目根目录执行：
@@ -34,8 +36,11 @@ cargo install --path .
 
 ### 2. 各平台环境配置
 
-#### 🍎 macOS / 🐧 Linux
-系统原生支持无特权的符号链接操作，无需额外配置，开箱即用。
+#### 🐧 Linux
+Linux 使用 Rust 标准库创建原生符号链接；阶段 8 已在本机 Ubuntu WSL2 环境验证该路径。
+
+#### 🍎 macOS
+macOS 与 Linux 共用 Unix 标准库符号链接代码路径，但当前暂未取得 macOS 实机验证结果。发布说明中应保持这一限制，不把 macOS 标为已验证平台。
 
 #### 🪟 Windows (特别说明)
 在 Windows 系统下，创建符号链接默认需要管理员权限。为了保证安全与自动化流程的顺畅，**Windows 用户必须安装配套的 Broker 服务**。
@@ -43,7 +48,7 @@ cargo install --path .
 1. 访问并下载 Windows 符号链接代理服务：
    👉 [win-symlinks (GitHub)](https://github.com/winddxr/win-symlinks)
 2. 按照该仓库的说明安装并启动后台服务。
-3. Agent Linker 会自动通过安全的本地 IPC 与该 Broker 服务通信，无缝完成符号链接的创建。
+3. Agent Linker 默认通过安全的本地 IPC 与该 Broker 服务通信。阶段 8 已验证 Windows 默认 backend 为 `windows-broker`，不会先直接创建再自动 fallback。
 
 ## 🚀 Quick Start (快速开始)
 
