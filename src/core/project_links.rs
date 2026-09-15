@@ -1235,7 +1235,7 @@ mod tests {
     fn database(temp_dir: &TestDir) -> DbPathResolution {
         let resolution = DbPathResolution {
             path: temp_dir.path().join("agent-linker.db"),
-            reason: DbPathReason::ExplicitDatabaseEnv,
+            reason: DbPathReason::ExplicitDataDirEnv,
         };
         migrate_database(&resolution).unwrap();
         resolution

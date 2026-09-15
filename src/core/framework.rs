@@ -528,7 +528,7 @@ mod tests {
         fs::create_dir(&temp_dir).unwrap();
         let resolution = DbPathResolution {
             path: temp_dir.join("agent-linker.db"),
-            reason: DbPathReason::ExplicitDatabaseEnv,
+            reason: DbPathReason::ExplicitDataDirEnv,
         };
 
         migrate_database(&resolution).unwrap();
@@ -571,7 +571,7 @@ mod tests {
         fs::create_dir(&temp_dir).unwrap();
         let resolution = DbPathResolution {
             path: temp_dir.join("agent-linker.db"),
-            reason: DbPathReason::ExplicitDatabaseEnv,
+            reason: DbPathReason::ExplicitDataDirEnv,
         };
         migrate_database(&resolution).unwrap();
 

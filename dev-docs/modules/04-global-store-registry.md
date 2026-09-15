@@ -23,16 +23,16 @@
 
 默认数据库路径：
 
-- Windows：`%APPDATA%\agent-linker\agent-linker.db`
+- Windows：`%LOCALAPPDATA%\agent-linker\agent-linker.db`
 - macOS：`~/Library/Application Support/agent-linker/agent-linker.db`
 - Linux：`$XDG_DATA_HOME/agent-linker/agent-linker.db`
 - Linux fallback：`~/.local/share/agent-linker/agent-linker.db`
 
 路径覆盖规则：
 
-- 可执行文件同目录存在 `agent-linker.db` 时，可作为 portable 数据库。
-- `AGLINK_DB` 可显式指定数据库路径。
-- `AGLINK_HOME` 可显式指定数据根目录。
+- `AGLINK_DATA_DIR` 可显式指定 Agent Linker 数据目录，数据库固定为该目录下的 `agent-linker.db`。
+- portable release 可将 `agent-linker.db` 放在可执行文件同目录；当该文件存在且未设置 `AGLINK_DATA_DIR` 时，使用该 portable 数据库。
+- 普通安装模式不默认写入可执行文件同目录。
 - `aglink db path` 必须能展示实际路径和解析原因。
 
 SQLite 保存：
@@ -45,7 +45,8 @@ SQLite 保存：
 
 ## 关键决策
 
-- Windows 不默认写入 exe 同目录，因为该位置可能不可写。
+- Windows 默认使用 `%LOCALAPPDATA%`，因为数据库包含本机路径和本机状态，不适合作为 roaming 数据。
+- 普通安装不默认写入 exe 同目录，因为该位置可能不可写；portable release 通过随包放置 `agent-linker.db` 显式启用同目录数据库。
 - command 层不直接写 SQL。
 - migration 在数据库初始化或显式 `aglink db migrate` 时运行。
 - 当前项目链接状态只保存在 `.agents/links.toml`。
@@ -56,4 +57,3 @@ SQLite 保存：
 - migration 状态可检查、可显式执行。
 - Registry 与 Framework Adapter 可通过结构化 API 访问。
 - manifest 与 SQLite 不互相替代、不重复承担对方职责。
-

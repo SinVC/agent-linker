@@ -122,7 +122,7 @@
 
 - `aglink config path` / `aglink config list`
   **用途**: 查看配置信息。
-  **说明**: 显示全局配置文件的路径及当前所有配置项。
+  **说明**: 显示保存全局配置的 SQLite 数据库路径及当前所有配置项。
 
 - `aglink config get <key>` / `aglink config set <key> <value>` / `aglink config unset <key>`
   **用途**: 修改配置项。
@@ -131,6 +131,7 @@
 - `aglink db path` / `aglink db migrate` / `aglink db backup [path]` / `aglink db check`
   **用途**: 管理 SQLite 数据库。
   **说明**: 获取数据库路径、手动执行数据表结构迁移、备份当前数据库以及检查数据库完整性。
+  **路径策略**: `AGLINK_DATA_DIR` 指定 Agent Linker 数据目录，数据库固定为其中的 `agent-linker.db`。portable release 可使用可执行文件同目录的 `agent-linker.db`；普通安装使用平台用户数据目录，Windows 默认 `%LOCALAPPDATA%`。
 
 ## 🤖 Framework (框架适配管理)
 

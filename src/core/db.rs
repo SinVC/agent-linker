@@ -19,8 +19,7 @@ const LATEST_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DbPathReason {
-    ExplicitDatabaseEnv,
-    ExplicitHomeEnv,
+    ExplicitDataDirEnv,
     PortableDatabase,
     PlatformDefault,
 }
@@ -28,9 +27,8 @@ pub enum DbPathReason {
 impl DbPathReason {
     pub const fn as_str(self) -> &'static str {
         match self {
-            DbPathReason::ExplicitDatabaseEnv => "AGLINK_DB",
-            DbPathReason::ExplicitHomeEnv => "AGLINK_HOME",
-            DbPathReason::PortableDatabase => "portable agent-linker.db next to executable",
+            DbPathReason::ExplicitDataDirEnv => "AGLINK_DATA_DIR",
+            DbPathReason::PortableDatabase => "portable release agent-linker.db next to executable",
             DbPathReason::PlatformDefault => "platform default",
         }
     }
@@ -51,10 +49,9 @@ pub enum TargetPlatform {
 
 #[derive(Debug, Clone)]
 pub struct DbPathContext {
-    pub aglink_db: Option<PathBuf>,
-    pub aglink_home: Option<PathBuf>,
+    pub aglink_data_dir: Option<PathBuf>,
     pub executable_path: Option<PathBuf>,
-    pub appdata: Option<PathBuf>,
+    pub local_appdata: Option<PathBuf>,
     pub home: Option<PathBuf>,
     pub xdg_data_home: Option<PathBuf>,
     pub platform: TargetPlatform,
@@ -63,14 +60,11 @@ pub struct DbPathContext {
 impl DbPathContext {
     pub fn from_environment() -> Self {
         Self {
-            aglink_db: env::var_os("AGLINK_DB")
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from),
-            aglink_home: env::var_os("AGLINK_HOME")
+            aglink_data_dir: env::var_os("AGLINK_DATA_DIR")
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from),
             executable_path: env::current_exe().ok(),
-            appdata: env::var_os("APPDATA")
+            local_appdata: env::var_os("LOCALAPPDATA")
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from),
             home: home_from_environment(),
@@ -137,17 +131,10 @@ pub fn resolve_database_path() -> Result<DbPathResolution> {
 }
 
 pub fn resolve_database_path_with(context: &DbPathContext) -> Result<DbPathResolution> {
-    if let Some(path) = &context.aglink_db {
-        return Ok(DbPathResolution {
-            path: path.clone(),
-            reason: DbPathReason::ExplicitDatabaseEnv,
-        });
-    }
-
-    if let Some(path) = &context.aglink_home {
+    if let Some(path) = &context.aglink_data_dir {
         return Ok(DbPathResolution {
             path: path.join(DB_FILE_NAME),
-            reason: DbPathReason::ExplicitHomeEnv,
+            reason: DbPathReason::ExplicitDataDirEnv,
         });
     }
 
@@ -583,12 +570,12 @@ fn count_rows(connection: &Connection, table: CountTable) -> Result<u32> {
 fn platform_default_path(context: &DbPathContext) -> Result<PathBuf> {
     match context.platform {
         TargetPlatform::Windows => {
-            let Some(appdata) = &context.appdata else {
+            let Some(local_appdata) = &context.local_appdata else {
                 return Err(Error::database(
-                    "APPDATA is required to resolve the Windows default database path",
+                    "LOCALAPPDATA is required to resolve the Windows default database path",
                 ));
             };
-            Ok(appdata.join(DATA_DIR_NAME).join(DB_FILE_NAME))
+            Ok(local_appdata.join(DATA_DIR_NAME).join(DB_FILE_NAME))
         }
         TargetPlatform::Macos => {
             let Some(home) = &context.home else {
@@ -686,10 +673,9 @@ mod tests {
 
     fn base_context(temp_dir: &Path) -> DbPathContext {
         DbPathContext {
-            aglink_db: None,
-            aglink_home: None,
+            aglink_data_dir: None,
             executable_path: Some(temp_dir.join("bin").join("aglink.exe")),
-            appdata: Some(temp_dir.join("appdata")),
+            local_appdata: Some(temp_dir.join("local-appdata")),
             home: Some(temp_dir.join("home")),
             xdg_data_home: Some(temp_dir.join("xdg")),
             platform: TargetPlatform::Linux,
@@ -697,29 +683,23 @@ mod tests {
     }
 
     #[test]
-    fn database_path_prefers_explicit_db_then_home_then_portable() {
+    fn database_path_prefers_data_dir_then_portable() {
         let temp_dir = TestDir::new("db-path-precedence");
         let portable_parent = temp_dir.path().join("bin");
         fs::create_dir(&portable_parent).unwrap();
         fs::write(portable_parent.join("agent-linker.db"), "").unwrap();
 
         let mut context = base_context(temp_dir.path());
-        context.aglink_db = Some(temp_dir.path().join("explicit.db"));
-        context.aglink_home = Some(temp_dir.path().join("aglink-home"));
+        context.aglink_data_dir = Some(temp_dir.path().join("aglink-data"));
 
-        let explicit = resolve_database_path_with(&context).unwrap();
-        assert_eq!(explicit.path, temp_dir.path().join("explicit.db"));
-        assert_eq!(explicit.reason, DbPathReason::ExplicitDatabaseEnv);
-
-        context.aglink_db = None;
-        let home = resolve_database_path_with(&context).unwrap();
+        let data_dir = resolve_database_path_with(&context).unwrap();
         assert_eq!(
-            home.path,
-            temp_dir.path().join("aglink-home").join("agent-linker.db")
+            data_dir.path,
+            temp_dir.path().join("aglink-data").join("agent-linker.db")
         );
-        assert_eq!(home.reason, DbPathReason::ExplicitHomeEnv);
+        assert_eq!(data_dir.reason, DbPathReason::ExplicitDataDirEnv);
 
-        context.aglink_home = None;
+        context.aglink_data_dir = None;
         let portable = resolve_database_path_with(&context).unwrap();
         assert_eq!(portable.path, portable_parent.join("agent-linker.db"));
         assert_eq!(portable.reason, DbPathReason::PortableDatabase);
@@ -737,7 +717,7 @@ mod tests {
             windows.path,
             temp_dir
                 .path()
-                .join("appdata")
+                .join("local-appdata")
                 .join("agent-linker")
                 .join("agent-linker.db")
         );
@@ -785,7 +765,7 @@ mod tests {
         let temp_dir = TestDir::new("db-migrate");
         let resolution = DbPathResolution {
             path: temp_dir.path().join("store").join("agent-linker.db"),
-            reason: DbPathReason::ExplicitDatabaseEnv,
+            reason: DbPathReason::ExplicitDataDirEnv,
         };
 
         let report = migrate_database(&resolution).unwrap();
@@ -809,7 +789,7 @@ mod tests {
         let temp_dir = TestDir::new("db-seed-preserves-enabled");
         let resolution = DbPathResolution {
             path: temp_dir.path().join("agent-linker.db"),
-            reason: DbPathReason::ExplicitDatabaseEnv,
+            reason: DbPathReason::ExplicitDataDirEnv,
         };
 
         migrate_database(&resolution).unwrap();
@@ -826,7 +806,7 @@ mod tests {
         let temp_dir = TestDir::new("db-config-backup");
         let resolution = DbPathResolution {
             path: temp_dir.path().join("agent-linker.db"),
-            reason: DbPathReason::ExplicitDatabaseEnv,
+            reason: DbPathReason::ExplicitDataDirEnv,
         };
         migrate_database(&resolution).unwrap();
 

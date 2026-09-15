@@ -120,13 +120,12 @@
    - `.agents/skills/` → `.claude/skills/`
 4. 全局配置、Registry、框架适配、Skill / Resource 等结构化数据统一存储在 SQLite 数据库中。
 5. 默认数据库路径遵循平台用户数据目录：
-   - Windows: `%APPDATA%\agent-linker\agent-linker.db`
+   - Windows: `%LOCALAPPDATA%\agent-linker\agent-linker.db`
    - macOS: `~/Library/Application Support/agent-linker/agent-linker.db`
    - Linux: `$XDG_DATA_HOME/agent-linker/agent-linker.db`，fallback 为 `~/.local/share/agent-linker/agent-linker.db`
 6. 支持 portable 模式：
-   - 可执行文件同目录存在 `agent-linker.db` 时，可使用该数据库作为 portable 数据库。
-   - 允许通过 `AGLINK_DB` 显式指定数据库路径。
-   - 允许通过 `AGLINK_HOME` 显式指定数据根目录。
+   - portable release 可在可执行文件同目录放置 `agent-linker.db`，并使用该数据库。
+   - 允许通过 `AGLINK_DATA_DIR` 显式指定数据根目录，数据库固定为该目录下的 `agent-linker.db`。
 7. Windows 不默认把数据库写到 exe 同目录，因为安装目录可能不可写。
 8. MVP 阶段不创建项目级配置文件，例如不创建 `.agents/config.toml`。
 9. 项目内保留 `.agents/links.toml` 作为 link manifest；它是项目链接状态清单，不是项目配置文件。

@@ -79,7 +79,7 @@
 
 目标：完成全局 SQLite 基础设施和内置框架数据模型。
 
-- [x] 实现数据库路径解析：默认平台路径、portable `agent-linker.db`、`AGLINK_DB`、`AGLINK_HOME`。
+- [x] 实现数据库路径解析：默认平台路径、portable release `agent-linker.db`、`AGLINK_DATA_DIR`。
 - [x] 实现 `db path`，输出实际路径和解析原因。
 - [x] 建立版本化 migration，至少覆盖 config、framework、mapping、linkable item、group 所需表。
 - [x] 实现 `db migrate`、`db check` 的 core API 和 CLI 命令。
@@ -91,7 +91,7 @@
 
 - 已运行：`cargo fmt`、`cargo fmt --check`、`cargo check`、`cargo test`。
 - `cargo test` 结果：30 个测试通过，0 个失败。
-- 使用工作区临时 `AGLINK_HOME=.tmp-stage3-db` 验证 CLI：`cargo run -- db path`、`cargo run -- db migrate`、`cargo run -- db check`、`cargo run -- framework list`、`cargo run -- framework show claude`、`cargo run -- framework mapping list`、`cargo run -- framework disable claude`、`cargo run -- framework enable claude`。
+- 使用工作区临时 `AGLINK_DATA_DIR=.tmp-stage3-db` 验证 CLI：`cargo run -- db path`、`cargo run -- db migrate`、`cargo run -- db check`、`cargo run -- framework list`、`cargo run -- framework show claude`、`cargo run -- framework mapping list`、`cargo run -- framework disable claude`、`cargo run -- framework enable claude`。
 - `db check` 验证结果：schema `1 / latest 1`，frameworks `1`，mappings `2`，status `ok`。
 
 验收：全局数据库可初始化、迁移、检查；Framework Adapter 可通过结构化 API 提供 init/link 所需 mapping。
@@ -114,7 +114,7 @@
 
 - 已运行：`cargo fmt`、`cargo fmt --check`、`cargo check --locked`、`cargo test --locked`。
 - `cargo test --locked` 结果：39 个测试通过，0 个失败。
-- 使用工作区临时 `AGLINK_HOME=.tmp-stage4-cli/home` 验证 CLI：`cargo run --locked -- db migrate`、`cargo run --locked -- skill add writer <temp-skill> --alias writing-helper`、`cargo run --locked -- skill list`、`cargo run --locked -- skill show writer`、`cargo run --locked -- resource add notes <temp-resource> --target-dir .agents/resources`、`cargo run --locked -- resource list`、`cargo run --locked -- resource refresh notes`。
+- 使用工作区临时 `AGLINK_DATA_DIR=.tmp-stage4-cli/home` 验证 CLI：`cargo run --locked -- db migrate`、`cargo run --locked -- skill add writer <temp-skill> --alias writing-helper`、`cargo run --locked -- skill list`、`cargo run --locked -- skill show writer`、`cargo run --locked -- resource add notes <temp-resource> --target-dir .agents/resources`、`cargo run --locked -- resource list`、`cargo run --locked -- resource refresh notes`。
 - 阶段 4 的 registry 命令只写入全局 SQLite；未创建、删除或修改当前项目 symlink，也不复制、移动或删除 source 内容。
 
 验收：Registry 命令不创建、不删除、不修改任何当前项目 symlink；source 内容不被复制、移动或删除。
@@ -167,7 +167,7 @@
 - 已运行：`cargo fmt --check`、`cargo check --locked`、`cargo test --locked`、`cargo run --locked -- --help`。
 - `cargo test --locked` 结果：47 个测试通过，0 个失败。
 - 新增测试使用临时 SQLite 数据库、临时 source、临时项目 manifest 和 mock symlink provider 覆盖 group lifecycle、group link/unlink、clean 只清理 manifest 管理链接、`clean --missing-source`，以及 doctor 的数据库、manifest、Framework Adapter 和 backend 检查。
-- 使用临时 `AGLINK_HOME=.tmp-stage6-cli/home` 验证 CLI：`db migrate`、`skill add`、`group create`、`group add`、`group show`、`doctor --verbose`。
+- 使用临时 `AGLINK_DATA_DIR=.tmp-stage6-cli/home` 验证 CLI：`db migrate`、`skill add`、`group create`、`group add`、`group show`、`doctor --verbose`。
 - 沙箱内直接运行 `aglink.exe doctor --verbose` 能正确报告 Windows Broker pipe 权限问题：`broker_code=SERVICE_UNAVAILABLE`；同一命令提权运行后 Windows Broker probe 通过并返回 `windows-broker available`。
 
 验收：批量操作与单项操作表现一致；clean 不会删除未记录在 manifest 中的文件或链接。

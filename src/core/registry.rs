@@ -758,7 +758,7 @@ mod tests {
     fn resolution(temp_dir: &Path) -> DbPathResolution {
         DbPathResolution {
             path: temp_dir.join("agent-linker.db"),
-            reason: DbPathReason::ExplicitDatabaseEnv,
+            reason: DbPathReason::ExplicitDataDirEnv,
         }
     }
 
