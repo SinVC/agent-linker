@@ -643,7 +643,7 @@ dependencies = [
 [[package]]
 name = "win-symlinks-client"
 version = "0.0.2"
-source = "git+https://github.com/winddxr/win-symlinks#7d5c3317764b8456ce4af140e0cd0aaf375cee1d"
+source = "git+https://github.com/winddxr/win-symlinks?rev=7d5c3317764b8456ce4af140e0cd0aaf375cee1d#7d5c3317764b8456ce4af140e0cd0aaf375cee1d"
 dependencies = [
  "serde",
  "serde_json",

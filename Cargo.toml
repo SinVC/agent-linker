@@ -6,7 +6,7 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [target.'cfg(windows)'.dependencies]
-win-symlinks-client = { git = "https://github.com/winddxr/win-symlinks", package = "win-symlinks-client" }
+win-symlinks-client = { git = "https://github.com/winddxr/win-symlinks", rev = "7d5c3317764b8456ce4af140e0cd0aaf375cee1d", package = "win-symlinks-client" }
 windows = { version = "0.62", features = ["Win32_Security"] }
 
 [dependencies]

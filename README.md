@@ -25,7 +25,31 @@
 
 当前 MVP 版本：`0.1.0`。发布前检查清单见 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)，变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 
-### 1. 基础安装 (所有系统)
+### 1. Release 安装 (推荐)
+
+Linux:
+
+```bash
+curl -fsSL https://github.com/winddxr/agent-linker/releases/latest/download/aglink-installer.sh | sh
+```
+
+Windows:
+
+```powershell
+irm https://github.com/winddxr/agent-linker/releases/latest/download/aglink-installer.ps1 | iex
+```
+
+Windows 安装器会安装 `aglink.exe`，并在需要时仅对 `WinSymlinksBroker` 服务安装步骤触发 UAC 提权。普通安装的数据目录与可执行文件目录分离；portable zip 则通过同目录 `agent-linker.db` 启用 portable 数据库模式。
+
+卸载:
+
+```powershell
+irm https://github.com/winddxr/agent-linker/releases/latest/download/aglink-uninstall.ps1 | iex
+```
+
+默认卸载保留数据库和 Registry 数据；需要删除用户数据时使用发布资产中的卸载脚本并传入 purge 选项。
+
+### 2. 从源码安装
 
 确保你的系统已安装 [Rust 与 Cargo](https://rustup.rs/) 环境。在本项目根目录执行：
 
@@ -34,7 +58,7 @@ cargo install --path .
 ```
 *(注：后续发布到 crates.io 后可通过 `cargo install aglink` 安装)*
 
-### 2. 各平台环境配置
+### 3. 各平台环境配置
 
 #### 🐧 Linux
 Linux 使用 Rust 标准库创建原生符号链接；阶段 8 已在本机 Ubuntu WSL2 环境验证该路径。
@@ -45,10 +69,7 @@ macOS 与 Linux 共用 Unix 标准库符号链接代码路径，但当前暂未�
 #### 🪟 Windows (特别说明)
 在 Windows 系统下，创建符号链接默认需要管理员权限。为了保证安全与自动化流程的顺畅，**Windows 用户必须安装配套的 Broker 服务**。
 
-1. 访问并下载 Windows 符号链接代理服务：
-   👉 [win-symlinks (GitHub)](https://github.com/winddxr/win-symlinks)
-2. 按照该仓库的说明安装并启动后台服务。
-3. Agent Linker 默认通过安全的本地 IPC 与该 Broker 服务通信。阶段 8 已验证 Windows 默认 backend 为 `windows-broker`，不会先直接创建再自动 fallback。
+Windows Release 包会携带固定版本的 `WinSymlinksBroker` 运行时。推荐使用 `aglink-installer.ps1` 一次完成 `aglink` 安装、Broker 检测与必要的服务安装。Agent Linker 默认通过安全的本地 IPC 与该 Broker 服务通信。阶段 8 已验证 Windows 默认 backend 为 `windows-broker`，不会先直接创建再自动 fallback。
 
 ## 🚀 Quick Start (快速开始)
 

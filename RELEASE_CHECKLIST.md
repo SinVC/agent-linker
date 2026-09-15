@@ -7,6 +7,10 @@ Use this checklist before tagging an Agent Linker release.
 - Current planned MVP version: `0.1.0`.
 - Confirm `Cargo.toml` uses the intended version.
 - Keep `publish = false` until crates.io publishing is explicitly prepared; the current Windows Broker client is a git dependency.
+- Confirm `win-symlinks-client` is pinned to the intended commit in `Cargo.toml`.
+- Configure release repository variables:
+  - `WIN_SYMLINKS_BROKER_URL`
+  - `WIN_SYMLINKS_BROKER_SHA256`
 
 ## Required Commands
 
@@ -19,15 +23,31 @@ cargo test --locked
 cargo run --locked -- --help
 ```
 
+## Release Packaging
+
+- Push a version tag such as `v0.1.0`; GitHub Actions builds and publishes release assets.
+- Confirm Windows release archives include `broker/win-symlinks-broker.exe`.
+- Confirm Windows release archives include `install-receipt.json` and do not include `VERSION.json`.
+- Confirm Windows release archives do not include `LICENSES/` or `THIRD_PARTY_NOTICES.md`.
+- Confirm `aglink-v<version>-x86_64-pc-windows-msvc-portable.zip` contains `agent-linker.db` next to `aglink.exe`.
+- Confirm release assets include:
+  - `aglink-installer.ps1`
+  - `aglink-uninstall.ps1`
+  - `aglink-installer.sh`
+  - `aglink-uninstall.sh`
+  - `SHA256SUMS`
+
 ## Platform Smoke Tests
 
 Windows:
 
-- Install and start the `WinSymlinksBroker` service.
+- Install with `aglink-installer.ps1`; confirm it installs and starts the `WinSymlinksBroker` service when absent.
 - Run `aglink --verbose doctor` and verify the `symlink-backend` check reports `windows-broker`.
 - In a temporary project with a temporary `AGLINK_DATA_DIR`, run `aglink db migrate`, `aglink init`, and `aglink status --json`.
 - Verify `CLAUDE.md` and `.claude/skills` are real symlinks, not real files/directories or shortcuts.
 - Verify `.agents/links.toml` and `status --json` record `provider_backend = "windows-broker"`.
+- Run `aglink-uninstall.ps1` and verify the binary and PATH entry are removed while data is retained.
+- Run `aglink-uninstall.ps1 -Purge` in a disposable environment and verify `agent-linker.db` is removed without deleting unrelated directories.
 
 Linux:
 

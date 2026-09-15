@@ -69,3 +69,8 @@ Global Store & Registry
 5. 建立 Linkable Item：实现 Skill / Resource 注册、刷新、路径规则和链接目标计算。
 6. 建立 CLI Command Surface：开放 `config`、`db`、`framework`、`skill`、`resource`、`group`、`link`、`unlink`、`status`、`clean`、`doctor`。
 7. 完成验证闭环：以 mock symlink、临时数据库、临时 manifest 和平台专项测试覆盖核心流程。
+
+## 发布分发
+
+Release、安装、卸载、Windows Broker 打包和 portable 形态的约束见
+[release-distribution.md](release-distribution.md)。
