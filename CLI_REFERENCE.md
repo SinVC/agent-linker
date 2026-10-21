@@ -1,150 +1,150 @@
-# Agent Linker CLI Reference (命令行指南)
+# Agent Linker CLI Reference
 
-`aglink` 提供了“类型注册 + 统一链接”的命令体系，将全局 Registry 管理与当前项目的链接状态管理优雅分离。
+本文对应当前实现：全局 SQLite 保存注册与配置，项目 `.agents/links.toml` 保存受管理符号链接。
 
-## 🌐 Global Options (全局选项)
+## 公共约定
 
-所有命令均支持以下全局标志，用于控制输出的详细程度：
+- `<参数>` 必填，`[参数]` 可选，`...` 为一个或多个，`|` 为二选一（非 shell 管道）；空格参数加引号。各级命令支持 `--help`。
+- **项目根就是工作目录，不向上查找。** `init/link/unlink/status/clean` 操作该目录；Registry、Group 定义、Config、Framework 操作全局数据库；`doctor` 检查两者。
+- 源相对工作目录解析，注册为规范化绝对路径。目标目录、框架路径相对项目根，禁止绝对路径和 `..`。名称、别名、`--as` 须为非空单段，禁止 `/\<>:"|?*` 及单独的 `.`、`..`。
+- 缺清单按空清单处理，损坏时报错；不强制先 `init`。`link` 创建缺少的真实父目录并保存清单，不补齐初始化结构；父路径含符号链接时报错。
+- 不复制、移动或删除源。正确链接可重复链接并纳管；`--force` 只替换指向错误的符号链接，不能替换真实文件／目录或抢占其他条目的清单路径。
+- Windows 创建链接依赖可用的 `WinSymlinksBroker`，不可用时报错，不自动回退；用 `aglink doctor --verbose` 诊断。
+- `--dry-run` 仅用于列明的命令：检查预览，不修改项目目录、链接或清单；数据库仍可能创建／迁移。修改不保证事务性：遇错停止，不回滚。
+- 全局 `-q/--quiet` 隐藏普通结果，`--verbose` 增加报告细节；可置于子命令前后，同时使用 quiet 优先。`status --json` 不受两者影响；错误写 stderr。
+- 完成／帮助返回 `0`，参数／执行错误及 `doctor` 检查失败返回 `1`。`status` 异常、`db check` 的 `needs attention` 不导致非零退出。
 
-- `aglink --quiet <command>`
-  **用途**: 静默模式。
-  **说明**: 仅输出必要的错误信息，隐藏进度和摘要。
-- `aglink --verbose <command>`
-  **用途**: 详细模式。
-  **说明**: 输出包含底层诊断、后端交互及系统错误码等详细日志。
+## 名称与路径
 
-## 🏁 Initialization & Status (初始化与状态)
+`<item>` 接受注册名、别名或 Registry ID。Skill/Resource 维护限对应类型；`link`、`group add/remove` 跨类型查询，多项匹配时报错，用 ID 消歧。同类型注册名、默认链接名分别唯一；若注册名与其他别名交叉重合，类型内维护按注册名排序取首项，应使用 ID 避免误选。`<group>` 接受分组名或 ID。
 
-管理当前项目的链接清单与健康状况。
+| 规则 | Skill | Resource |
+| --- | --- | --- |
+| 源要求 | 目录，含可读、非空白 UTF-8 `SKILL.md` | 文件或目录 |
+| 省略 `--name` | 输入路径末段去掉最后一个扩展名 | 同左，如 `guide.md` → `guide` |
+| 默认链接名 | `--alias`，否则注册名 | `--alias`，否则规范化源路径完整末段，如 `guide.md` |
+| 项目相对链接路径 | `.agents/skills/<链接名>` | `<目标目录>/<链接名>` |
 
-- `aglink init`
-  **用途**: 初始化当前项目的链接环境。
-  **说明**: 在当前目录下创建 `.agents/` 管理目录及 `.agents/links.toml` 链接状态清单，并自动管理 `.gitignore`，为当前工程建立 Contract (契约)。MVP 阶段不支持 `--dry-run`。
+`link --as` 覆盖默认链接名，不补扩展名；Resource 的 `link --target-dir` 覆盖注册目录。均不改 Registry；同一条目可链接到多个路径。
 
-- `aglink status` / `aglink status --json`
-  **用途**: 查看当前项目的链接状态。
-  **说明**: 检查并输出项目中所有被管理的 Symlink (符号链接) 状态。`--json` 格式提供供机器读取的稳态输出（如 `missing`、`correct_symlink`、`broken_symlink` 等稳定键值）。
+## 初始化、状态与清理
 
-- `aglink clean [--broken] [--missing-source] [--dry-run]`
-  **用途**: 清理失效的链接。
-  **说明**: 仅处理 `.agents/links.toml` 清单中由 `aglink` 管理且状态异常的链接。`--dry-run` 允许在不实际删除的情况下预览操作。
+- `aglink init`：创建缺失的真实 `AGENTS.md`（空）、`.agents/`、`.agents/skills/`；创建 `CLAUDE.md` → `AGENTS.md`、`.claude/skills/` → `.agents/skills/` 并合并入清单。保留源内容，正确链接跳过；源位置类型不符、错误链接或真实路径冲突时报错。`.gitignore` 的 aglink managed block 包含 `.claude/`、`.agents/skills/`、`.agents/links.toml`，保留块外内容。可重复执行；无 `--dry-run/--force`。
+- `aglink status [--json]`：只检查清单记录，不扫描未管理链接，不修复。JSON 顶层为 `project_root`、`manifest_path`、`links`；每项含 `id`（清单 ID）、`item_id`、`item_name`、`link_path`、`source_path`、`link_kind`（`file/directory`）、`provider_backend`、`status`。
 
-- `aglink doctor`
-  **用途**: 全局环境健康诊断。
-  **说明**: 检查 SQLite 数据库、Migration、清单文件、Framework Adapter、Symlink (符号链接) 后端（如 Windows Broker）的可用性与配置正确性。
+| `links[].status` | 含义 |
+| --- | --- |
+| `missing` | 链接路径不存在 |
+| `correct_symlink` | 指向记录源且源类型正确 |
+| `wrong_symlink_target` | 指向其他目标，即使该目标不存在 |
+| `broken_symlink` | 指向记录源，但该源不存在 |
+| `existing_real_file` / `existing_real_directory` | 链接位置被真实文件／目录占用 |
+| `unsupported_file_type` | 链接位置类型不支持，或源类型与记录不符 |
 
-## 🔗 Link Management (链接管理)
+- `aglink clean [--broken|--missing-source] [--dry-run]`：筛选互斥，仅处理清单。默认选 `missing/broken_symlink`；`--broken` 只选 `broken_symlink`；`--missing-source` 按记录源不存在筛选，即使链接指向别处。所选路径不存在时只删记录，否则删符号链接及记录；选中真实文件／目录或不支持类型时报错。
+- `aglink doctor`：检查数据库、schema、框架记录、清单及后端；Windows 临时创建／删除链接探测 Broker。缺清单按空清单通过；不修复项目链接，框架查询可能初始化／迁移数据库。
 
-核心的链接操作命令。所有的链接行为统一通过 `link` 与 `unlink` 完成。
+## 链接与解除链接
 
-- `aglink link <name> [--as <link-name>] [--target-dir <dir>] [--force] [--dry-run]`
-  **用途**: 为当前项目创建 Linkable Item 的 Symlink (符号链接)。
-  **说明**: 根据全局 Registry 中的类型（Skill 或 Resource），将目标链接到当前项目中。
-  - `--as`: 临时覆盖本次链接的名称，不影响 Registry 中的别名。
-  - `--target-dir`: 覆盖 Resource 本次的链接目标目录。
-  - `--force`: 仅允许替换指向错误的符号链接，**绝不允许**删除真实文件或目录。
+```text
+aglink link <item> [--as <链接名>] [--target-dir <目录>] [--force] [--dry-run]
+aglink link --group <group> [--force] [--dry-run]
+aglink unlink <selector> [--dry-run]
+aglink unlink --group <group> [--dry-run]
+aglink unlink --all [--dry-run]
+```
 
-- `aglink link --group <group> [--dry-run]`
-  **用途**: 批量创建分组链接。
-  **说明**: 将指定 Group (分组) 下的所有成员一次性链接到当前项目。
+- `link` 校验源存在、Skill 内容及源类型；`--target-dir` 仅 Resource 可用。分组用成员默认路径，不接受 `--as/--target-dir`；逐项执行，失败前成功的链接保留。
+- `unlink <selector>` **查询清单，不查询 Registry**：接受清单 ID、条目 ID、清单条目名、项目相对链接路径或末段名。须恰好匹配一条；多条时用清单 ID 或完整相对路径消歧。Registry 改名／注销后仍可操作。
+- selector、`--group`、`--all` 必选且互斥。`--group` 按**当前成员 ID**选全部对应链接；不记录链接时所属组，移出组者不选。`--all` 包括 `init` 的框架链接。
+- 删除所选正确／错误／损坏链接及记录，路径缺失时只删记录；先检查全部所选项，真实文件／目录或不支持类型会阻止操作。保留源及父目录；单项和 `--all` 不依赖数据库。
 
-- `aglink unlink <name> [--dry-run]`
-  **用途**: 移除指定的链接。
-  **说明**: 安全移除当前项目中受管理的符号链接。
+## Skill 与 Resource 注册
 
-- `aglink unlink --group <group> [--dry-run]` / `aglink unlink --all [--dry-run]`
-  **用途**: 批量移除链接。
-  **说明**: 移除特定分组内的所有链接，或通过 `--all` 清理当前项目中的所有管理的链接。
+```text
+aglink skill add <path> [--name <名称>] [--alias <链接名>]
+aglink resource add <path> --target-dir <目录> [--name <名称>] [--alias <链接名>]
+aglink <type> list
+aglink <type> show <item>
+aglink <type> rename <item> <新注册名>
+aglink <type> remove <item>
+aglink <type> refresh <item>
+```
 
-## 🛠️ Linkable Item: Skill (技能管理)
+`<type>` 为 `skill` 或 `resource`。`add` 只注册本地源，不创建链接；同类型同注册名或同默认链接名报错，重复注册不更新。
 
-管理全局可用的 Agent 技能。
+`list/show` 查看注册；`rename` 保留 ID、别名及分组引用，不改项目链接／清单；无别名 Skill 改名影响以后默认链接名。`remove` 注销条目及分组成员关系，保留源和链接。`refresh` 校验原路径并更新规范化路径／时间，源丢失或类型变化时报错，不寻找移动后的源或修复链接。修改源路径、别名、Resource 默认目录需注销后重注册（ID 改变）；已有链接应先 `unlink`。
 
-- `aglink skill add <path> [--name <name>] [--alias <link-name>]`
-  **用途**: 注册新的 Skill。
-  **说明**: 将指定路径注册为全局 Skill。可选指定注册名称与默认别名。
+## Group 分组
 
-- `aglink skill list` / `aglink skill show <name>`
-  **用途**: 查询 Skill 信息。
-  **说明**: 列出所有已注册的 Skill 或展示指定 Skill 的详细信息。
+```text
+aglink group create <名称>
+aglink group list
+aglink group show <group>
+aglink group rename <group> <新名称>
+aglink group delete <group>
+aglink group add <group> <item>...
+aglink group remove <group> <item>...
+aglink group link <group> [--force] [--dry-run]
+aglink group unlink <group> [--dry-run]
+```
 
-- `aglink skill rename <old> <new>`
-  **用途**: 重命名 Skill。
-  **说明**: 修改 Registry 中已注册 Skill 的标识名称。
+`create` 建空组，重名报错；`list/show` 查看组及成员。`add/remove` 至少一个成员；重复输入、添加已有成员、移除非成员报错。`rename/delete` 和成员增删不改项目链接；删组保留条目。`group link/unlink` 分别等价于 `link/unlink --group`。
 
-- `aglink skill remove <name>`
-  **用途**: 移除 Skill 注册。
-  **说明**: 从全局 Registry 中注销该 Skill，但不会删除原始真实文件。
+## 配置与数据库
 
-- `aglink skill refresh <name>`
-  **用途**: 刷新 Skill 状态。
-  **说明**: 重新检查并更新 Skill 源路径的有效性。
+```text
+aglink config path
+aglink config list
+aglink config get <key>
+aglink config set <key> <value>
+aglink config unset <key>
+aglink db path
+aglink db migrate
+aglink db backup [文件路径]
+aglink db check
+```
 
-## 📄 Linkable Item: Resource (资源管理)
+- `config path` 与 `db path` 等价：显示路径及原因，不打开数据库。其余 Config、Registry、Group 定义、Framework 查询／修改自动创建／迁移数据库。
+- Config 存取任意字符串键值，**尚无接入 CLI 行为的键或默认值**。`set` 新增／覆盖，key 不得全空白；`get` 不存在输出 `unset`；`unset` 删除值，不存在也成功；`list` 列已保存值。
+- `db migrate` 创建／升级数据库，补齐内置框架数据。`db backup` 先迁移再备份；省略路径时在数据库同目录生成 `agent-linker-backup-<纳秒时间戳>.db`；显式为相对工作目录或绝对**文件路径**，自动建父目录，目标存在时报错。
+- `db check` 检查存在性、可写性、schema、框架／映射记录，不做 SQLite 完整性扫描或迁移。需读取输出状态；需失败退出码用 `doctor`。
 
-管理全局可用的背景知识或文档等资源。
+数据库按优先级选择，文件名固定为 `agent-linker.db`：
 
-- `aglink resource add <path> --target-dir <project-relative-dir> [--name <name>] [--alias <link-name>]`
-  **用途**: 注册新的 Resource。
-  **说明**: 将指定路径注册为全局 Resource。必须提供 `--target-dir` 作为默认在目标项目中映射的相对路径。
+1. 非空环境变量 `AGLINK_DATA_DIR` 指定目录（相对值相对于工作目录）。
+2. 可执行文件同目录**已存在**的 `agent-linker.db`（portable 模式）。
+3. 平台默认目录：Windows `%LOCALAPPDATA%/agent-linker/`；macOS `~/Library/Application Support/agent-linker/`；Linux `$XDG_DATA_HOME/agent-linker/`，未设置时 `~/.local/share/agent-linker/`。
 
-- `aglink resource list` / `aglink resource show <name>`
-  **用途**: 查询 Resource 信息。
-  **说明**: 浏览资源列表或查看单个资源的详情与映射规则。
+## Framework 框架定义
 
-- `aglink resource rename <old> <new>` / `aglink resource remove <name>` / `aglink resource refresh <name>`
-  **用途**: 维护 Resource。
-  **说明**: 对已注册的资源进行重命名、移除注册或刷新源状态操作。
+```text
+aglink framework list
+aglink framework show <框架>
+aglink framework enable <框架>
+aglink framework disable <框架>
+aglink framework mapping list [框架]
+aglink framework mapping add <框架> <source> <link> --kind <file|dir>
+aglink framework mapping remove <框架> <link>
+```
 
-## 🗂️ Group (分组管理)
+`<框架>` 为已有框架名或 ID；内置 `claude`，无新增框架命令。`list/show` 查看定义，`enable/disable` 修改**全局**启用标记。mapping 的 source/link 为项目相对路径，添加时不校验源存在；kind 为文件／目录（`dir` 也接受 `directory`）。`mapping list` 省略框架列全部；同框架重复 link 报错，required 内置映射不可删。
 
-将多个 Skill 与 Resource 组合为逻辑集合，方便批量操作。
+**当前仅维护数据库，不修改项目链接；`init` 固定使用内置 Claude 两条映射，不读取数据库启用标记／自定义 mapping。** 禁用 Claude 不阻止 `init` 创建兼容链接，新增 mapping 不生效。
 
-- `aglink group create <name>` / `aglink group delete <name>` / `aglink group rename <old> <new>`
-  **用途**: 维护分组生命周期。
-  **说明**: 创建新分组、删除现有分组或进行重命名。
+## 示例：名称覆盖与最终路径
 
-- `aglink group add <group> <item>...` / `aglink group remove <group> <item>...`
-  **用途**: 管理分组内成员。
-  **说明**: 向分组中添加或移除特定的 Skill 与 Resource。
+在项目根执行；假设 `../skills/writer/SKILL.md` 有非空内容，`../guide.md` 存在，名称未注册且目标无冲突：
 
-- `aglink group list` / `aglink group show <name>`
-  **用途**: 查询分组。
-  **说明**: 查看所有分组的列表或特定分组的成员明细。
+```text
+aglink init
+aglink skill add ../skills/writer --name writer --alias writing
+aglink link writer --as draft
+aglink unlink .agents/skills/draft
+aglink resource add ../guide.md --target-dir docs
+aglink link guide --target-dir references --as handbook.md --dry-run
+aglink link guide --target-dir references --as handbook.md
+aglink unlink references/handbook.md
+```
 
-- `aglink group link <group> [--dry-run]` / `aglink group unlink <group> [--dry-run]`
-  **用途**: 分组链接操作。
-  **说明**: 提供与 `aglink link --group` 等价的能力，通过 Group 视角批量创建或移除项目的链接。
-
-## ⚙️ Config & Database (配置与存储管理)
-
-管理 CLI 行为与底层 SQLite 数据库。
-
-- `aglink config path` / `aglink config list`
-  **用途**: 查看配置信息。
-  **说明**: 显示保存全局配置的 SQLite 数据库路径及当前所有配置项。
-
-- `aglink config get <key>` / `aglink config set <key> <value>` / `aglink config unset <key>`
-  **用途**: 修改配置项。
-  **说明**: 读取、更新或移除特定的全局配置键值。
-
-- `aglink db path` / `aglink db migrate` / `aglink db backup [path]` / `aglink db check`
-  **用途**: 管理 SQLite 数据库。
-  **说明**: 获取数据库路径、手动执行数据表结构迁移、备份当前数据库以及检查数据库完整性。
-  **路径策略**: `AGLINK_DATA_DIR` 指定 Agent Linker 数据目录，数据库固定为其中的 `agent-linker.db`。portable release 可使用可执行文件同目录的 `agent-linker.db`；普通安装使用平台用户数据目录，Windows 默认 `%LOCALAPPDATA%`。
-
-## 🤖 Framework (框架适配管理)
-
-管理目标 AI 代理框架（如 Claude 等）的特殊路径映射。
-
-- `aglink framework list` / `aglink framework show <name>`
-  **用途**: 查询框架支持。
-  **说明**: 列出所有可用的 AI 框架及其默认的映射规则。
-
-- `aglink framework enable <name>` / `aglink framework disable <name>`
-  **用途**: 启停框架适配。
-  **说明**: 在当前项目中启用或禁用特定框架的自动化映射投射。
-
-- `aglink framework mapping list <name>` / `aglink framework mapping add <name> <source> <link> --kind file|dir` / `aglink framework mapping remove <name> <link>`
-  **用途**: 自定义框架映射。
-  **说明**: 查看、增加或移除特定框架的源到链接的映射规则，满足框架要求的特定 Format (格式) 及路径要求。
+Skill 创建 `.agents/skills/draft` → writer 源目录，注册默认仍为 `writing`。Resource 注册名为 `guide`，默认路径 `docs/guide.md`，本次创建 `references/handbook.md` → guide.md 源文件。`unlink` 删除链接和记录，保留源及注册信息。
