@@ -1,6 +1,6 @@
 pub mod db;
 pub mod error;
-pub mod framework;
+pub mod harness;
 pub mod linkable;
 pub mod manifest;
 pub mod paths;

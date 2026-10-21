@@ -13,7 +13,7 @@ use crate::core::{
     db,
     db::DbPathResolution,
     error::{Error, Result},
-    framework,
+    harness,
     linkable::{
         validate_optional_alias, validate_project_relative_target_dir, validate_resource_source,
         validate_skill_source, LinkableItem, LinkableItemType,
@@ -665,30 +665,23 @@ pub fn doctor_project(
         },
     });
 
-    checks.push(match framework::list_frameworks(resolution) {
-        Ok(frameworks) => {
-            let mapping_count: usize = frameworks
-                .iter()
-                .map(|framework| framework.mappings.len())
-                .sum();
+    checks.push(match harness::list_harnesses(resolution) {
+        Ok(harnesses) => {
+            let mapping_count: usize = harnesses.iter().map(|harness| harness.mappings.len()).sum();
             DoctorCheck {
-                name: "framework-adapter".to_string(),
-                ok: !frameworks.is_empty() && mapping_count > 0,
-                summary: format!(
-                    "{} frameworks, {} mappings",
-                    frameworks.len(),
-                    mapping_count
-                ),
+                name: "harness-adapter".to_string(),
+                ok: !harnesses.is_empty() && mapping_count > 0,
+                summary: format!("{} harnesses, {} mappings", harnesses.len(), mapping_count),
                 details: verbose
                     .then(|| {
-                        frameworks
+                        harnesses
                             .iter()
-                            .map(|framework| {
+                            .map(|harness| {
                                 format!(
                                     "{} enabled={} mappings={}",
-                                    framework.name,
-                                    framework.enabled,
-                                    framework.mappings.len()
+                                    harness.name,
+                                    harness.enabled,
+                                    harness.mappings.len()
                                 )
                             })
                             .collect()
@@ -697,7 +690,7 @@ pub fn doctor_project(
             }
         }
         Err(error) => DoctorCheck {
-            name: "framework-adapter".to_string(),
+            name: "harness-adapter".to_string(),
             ok: false,
             summary: error.to_string(),
             details: Vec::new(),
@@ -1135,7 +1128,7 @@ fn link_record_from_item(
     LinkRecord {
         id: record_id.to_string(),
         scope: "project".to_string(),
-        framework_name: "registry".to_string(),
+        harness_name: "registry".to_string(),
         item_id: item.id.clone(),
         item_name: item.name.clone(),
         source_path: item.source_path.clone(),
@@ -1819,7 +1812,7 @@ mod tests {
     }
 
     #[test]
-    fn doctor_reports_database_manifest_framework_and_backend() {
+    fn doctor_reports_database_manifest_harness_and_backend() {
         let temp_dir = TestDir::new("doctor");
         fs::create_dir(temp_dir.path().join(".agents")).unwrap();
         save_empty_manifest(temp_dir.path());
@@ -1833,7 +1826,7 @@ mod tests {
         assert!(report
             .checks
             .iter()
-            .any(|check| check.name == "framework-adapter"));
+            .any(|check| check.name == "harness-adapter"));
         assert!(report
             .checks
             .iter()

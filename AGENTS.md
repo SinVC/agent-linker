@@ -23,7 +23,7 @@ Correctness and safety of real files, symlink targets, and project link state ar
 - Keep dependency direction as `cli -> commands -> core`.
 - `commands` must not directly write SQL, read/write `.agents/links.toml`, or call platform symlink APIs.
 - All symlink behavior goes through Symlink Core; Windows defaults to the Broker backend.
-- Global SQLite stores registry/config/framework/group data; `.agents/links.toml` stores only current project symlink state.
+- Global SQLite stores registry/config/harness/group data; `.agents/links.toml` stores only current project symlink state.
 - MVP does not use `.agents/config.toml`, Rust workspace splitting, runtime plugins, or custom Linkable Item types.
 
 ## Safety Boundaries
@@ -54,7 +54,7 @@ Read these only when the condition matches:
 - AI staged development plan and checkable task progress -> `dev-docs/ai-development-todo.md`.
 - Symlink lifecycle, provider abstraction, errors, conflict behavior, or Windows Broker -> `dev-docs/modules/01-symlink-core.md`.
 - `aglink init`, `AGENTS.md`, `.agents/`, `CLAUDE.md`, `.gitignore`, or manifest behavior -> `dev-docs/modules/02-project-init-manifest.md`.
-- Agent framework mappings or Claude compatibility links -> `dev-docs/modules/03-framework-adapter.md`.
+- Agent harness mappings or Claude compatibility links -> `dev-docs/modules/03-harness-adapter.md`.
 - SQLite, config, registry persistence, groups, migrations, or database path resolution -> `dev-docs/modules/04-global-store-registry.md`.
 - Skill, Resource, source ownership, aliases, target paths, or Linkable Item rules -> `dev-docs/modules/05-linkable-item.md`.
 - CLI command shape, user-facing command behavior, output modes, or `doctor` -> `dev-docs/modules/06-cli-command-surface.md`.

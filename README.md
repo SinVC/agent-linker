@@ -2,14 +2,14 @@
 
 **Agent Linker** (`aglink`) 是一个基于 Rust 开发的 CLI 工具，专为 AI Agent 的指令、技能 (Skills) 和资源 (Resources) 提供基于受控 Symlink (符号链接) 的管理方案。
 
-通过构建中心化的 Agent 资源仓库，并将它们安全、高效地链接到各个独立的工程目录中，Agent Linker 帮助开发者轻松实现跨项目的上下文同步与框架兼容。
+通过构建中心化的 Agent 资源仓库，并将它们安全、高效地链接到各个独立的工程目录中，Agent Linker 帮助开发者轻松实现跨项目的上下文同步与 Harness 兼容。
 
 ## 🌟 Advantages (优势)
 
 - **Safety First (安全第一)**: 严格区分真实文件与符号链接。程序永远不会覆盖或删除用户的真实文件与目录。即便在使用 `--force` 时，也仅限于替换错误的符号链接。
 - **Cross-platform Consistency (跨平台一致性)**: 在 Linux / macOS 上使用原生 Symlink；在 Windows 上提供专属 Broker 服务机制，彻底告别频繁的 UAC 提权弹窗。
-- **Centralized Management (中心化管理)**: 全局使用 SQLite 存储 Registry、Config、Framework 和 Group 数据，支持按分组管理技能与资源，一处修改，处处生效。
-- **Framework Adapter (框架适配)**: 自动将统一管理的真实源映射投射为各种 AI Agent 框架（如 Claude 等）所要求的特定 Format (格式) 和路径。
+- **Centralized Management (中心化管理)**: 全局使用 SQLite 存储 Registry、Config、Harness 和 Group 数据，支持按分组管理技能与资源，一处修改，处处生效。
+- **Harness Adapter (兼容适配)**: 管理 Claude Code 等 Harness 的路径约定；当前 `init` 创建内置 Claude Code 兼容链接，自定义 mapping 与启停标记仅保存在全局数据库。
 - **High Performance (高性能)**: 基于 Rust 构建，操作幂等，执行极速。
 
 ## 🎯 Significance (意义)
@@ -73,10 +73,12 @@ Windows Release 包会携带固定版本的 `WinSymlinksBroker` 运行时。推�
 
 ## 🚀 Quick Start (快速开始)
 
-初始化项目并创建 `.agents/` 管理目录与配置文件：
+初始化项目结构与链接状态清单，查看 Harness 适配定义：
 
 ```bash
 aglink init
+aglink harness list
+aglink harness show claude
 ```
 
 > **注意**: 完整命令使用方法与用途分类，请查阅详细的 [CLI Command Reference (命令行指南)](CLI_REFERENCE.md)。同时，也可通过 `aglink --help` 随时获取内建帮助。
@@ -88,6 +90,7 @@ aglink init
 ### Key Terms (关键术语)
 - **Symlink**: 操作系统级符号链接，非快捷方式，非硬链接。
 - **Agent Skill**: 按用途命名的目录，包含 AI Agent 可使用的提示词、脚本或文档等资源。
+- **Harness**: 运行 Agent 的软件系统，如 Claude Code；`aglink harness` 管理兼容路径与适配设置，不启动或停止该工具。旧 `framework` 命令已移除。
 - **Linkable Item**: Skill 与 Resource 的统一抽象，是工具管理的基本链接单元。
 
 ### 核心模块

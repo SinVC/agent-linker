@@ -5,8 +5,8 @@
 ## 公共约定
 
 - `<参数>` 必填，`[参数]` 可选，`...` 为一个或多个，`|` 为二选一（非 shell 管道）；空格参数加引号。各级命令支持 `--help`。
-- **项目根就是工作目录，不向上查找。** `init/link/unlink/status/clean` 操作该目录；Registry、Group 定义、Config、Framework 操作全局数据库；`doctor` 检查两者。
-- 源相对工作目录解析，注册为规范化绝对路径。目标目录、框架路径相对项目根，禁止绝对路径和 `..`。名称、别名、`--as` 须为非空单段，禁止 `/\<>:"|?*` 及单独的 `.`、`..`。
+- **项目根就是工作目录，不向上查找。** `init/link/unlink/status/clean` 操作该目录；Registry、Group 定义、Config、Harness 操作全局数据库；`doctor` 检查两者。
+- 源相对工作目录解析，注册为规范化绝对路径。目标目录、Harness 路径相对项目根，禁止绝对路径和 `..`。名称、别名、`--as` 须为非空单段，禁止 `/\<>:"|?*` 及单独的 `.`、`..`。
 - 缺清单按空清单处理，损坏时报错；不强制先 `init`。`link` 创建缺少的真实父目录并保存清单，不补齐初始化结构；父路径含符号链接时报错。
 - 不复制、移动或删除源。正确链接可重复链接并纳管；`--force` 只替换指向错误的符号链接，不能替换真实文件／目录或抢占其他条目的清单路径。
 - Windows 创建链接依赖可用的 `WinSymlinksBroker`，不可用时报错，不自动回退；用 `aglink doctor --verbose` 诊断。
@@ -42,7 +42,7 @@
 | `unsupported_file_type` | 链接位置类型不支持，或源类型与记录不符 |
 
 - `aglink clean [--broken|--missing-source] [--dry-run]`：筛选互斥，仅处理清单。默认选 `missing/broken_symlink`；`--broken` 只选 `broken_symlink`；`--missing-source` 按记录源不存在筛选，即使链接指向别处。所选路径不存在时只删记录，否则删符号链接及记录；选中真实文件／目录或不支持类型时报错。
-- `aglink doctor`：检查数据库、schema、框架记录、清单及后端；Windows 临时创建／删除链接探测 Broker。缺清单按空清单通过；不修复项目链接，框架查询可能初始化／迁移数据库。
+- `aglink doctor`：检查数据库、schema、Harness 记录、清单及后端；Windows 临时创建／删除链接探测 Broker。缺清单按空清单通过；不修复项目链接，Harness 查询可能初始化／迁移数据库。
 
 ## 链接与解除链接
 
@@ -56,7 +56,7 @@ aglink unlink --all [--dry-run]
 
 - `link` 校验源存在、Skill 内容及源类型；`--target-dir` 仅 Resource 可用。分组用成员默认路径，不接受 `--as/--target-dir`；逐项执行，失败前成功的链接保留。
 - `unlink <selector>` **查询清单，不查询 Registry**：接受清单 ID、条目 ID、清单条目名、项目相对链接路径或末段名。须恰好匹配一条；多条时用清单 ID 或完整相对路径消歧。Registry 改名／注销后仍可操作。
-- selector、`--group`、`--all` 必选且互斥。`--group` 按**当前成员 ID**选全部对应链接；不记录链接时所属组，移出组者不选。`--all` 包括 `init` 的框架链接。
+- selector、`--group`、`--all` 必选且互斥。`--group` 按**当前成员 ID**选全部对应链接；不记录链接时所属组，移出组者不选。`--all` 包括 `init` 的 Harness 链接。
 - 删除所选正确／错误／损坏链接及记录，路径缺失时只删记录；先检查全部所选项，真实文件／目录或不支持类型会阻止操作。保留源及父目录；单项和 `--all` 不依赖数据库。
 
 ## Skill 与 Resource 注册
@@ -105,10 +105,10 @@ aglink db backup [文件路径]
 aglink db check
 ```
 
-- `config path` 与 `db path` 等价：显示路径及原因，不打开数据库。其余 Config、Registry、Group 定义、Framework 查询／修改自动创建／迁移数据库。
+- `config path` 与 `db path` 等价：显示路径及原因，不打开数据库。其余 Config、Registry、Group 定义、Harness 查询／修改自动创建／迁移数据库。
 - Config 存取任意字符串键值，**尚无接入 CLI 行为的键或默认值**。`set` 新增／覆盖，key 不得全空白；`get` 不存在输出 `unset`；`unset` 删除值，不存在也成功；`list` 列已保存值。
-- `db migrate` 创建／升级数据库，补齐内置框架数据。`db backup` 先迁移再备份；省略路径时在数据库同目录生成 `agent-linker-backup-<纳秒时间戳>.db`；显式为相对工作目录或绝对**文件路径**，自动建父目录，目标存在时报错。
-- `db check` 检查存在性、可写性、schema、框架／映射记录，不做 SQLite 完整性扫描或迁移。需读取输出状态；需失败退出码用 `doctor`。
+- `db migrate` 创建／升级数据库，补齐内置 Harness 数据。`db backup` 先迁移再备份；省略路径时在数据库同目录生成 `agent-linker-backup-<纳秒时间戳>.db`；显式为相对工作目录或绝对**文件路径**，自动建父目录，目标存在时报错。
+- `db check` 检查存在性、可写性、schema、Harness／映射记录，不做 SQLite 完整性扫描或迁移。需读取输出状态；需失败退出码用 `doctor`。
 
 数据库按优先级选择，文件名固定为 `agent-linker.db`：
 
@@ -116,21 +116,23 @@ aglink db check
 2. 可执行文件同目录**已存在**的 `agent-linker.db`（portable 模式）。
 3. 平台默认目录：Windows `%LOCALAPPDATA%/agent-linker/`；macOS `~/Library/Application Support/agent-linker/`；Linux `$XDG_DATA_HOME/agent-linker/`，未设置时 `~/.local/share/agent-linker/`。
 
-## Framework 框架定义
+## Harness 兼容适配
+
+Harness 指运行 Agent 的软件系统，如 Claude Code。本组命令管理兼容路径与适配设置，不启动／停止该工具；旧 `framework` 命令已移除。
 
 ```text
-aglink framework list
-aglink framework show <框架>
-aglink framework enable <框架>
-aglink framework disable <框架>
-aglink framework mapping list [框架]
-aglink framework mapping add <框架> <source> <link> --kind <file|dir>
-aglink framework mapping remove <框架> <link>
+aglink harness list
+aglink harness show <Harness>
+aglink harness enable <Harness>
+aglink harness disable <Harness>
+aglink harness mapping list [Harness]
+aglink harness mapping add <Harness> <source> <link> --kind <file|dir>
+aglink harness mapping remove <Harness> <link>
 ```
 
-`<框架>` 为已有框架名或 ID；内置 `claude`，无新增框架命令。`list/show` 查看定义，`enable/disable` 修改**全局**启用标记。mapping 的 source/link 为项目相对路径，添加时不校验源存在；kind 为文件／目录（`dir` 也接受 `directory`）。`mapping list` 省略框架列全部；同框架重复 link 报错，required 内置映射不可删。
+`<Harness>` 为已有 Harness 名或 ID；内置 `claude` 指 Claude Code，无新增 Harness 命令。`list/show` 查看定义，`enable/disable` 修改**全局**启用标记。mapping 的 source/link 为项目相对路径，添加时不校验源存在；kind 为文件／目录（`dir` 也接受 `directory`）。`mapping list` 省略 Harness 列全部；同 Harness 重复 link 报错，required 内置映射不可删。
 
-**当前仅维护数据库，不修改项目链接；`init` 固定使用内置 Claude 两条映射，不读取数据库启用标记／自定义 mapping。** 禁用 Claude 不阻止 `init` 创建兼容链接，新增 mapping 不生效。
+**当前仅维护数据库，不修改项目链接；`init` 固定使用内置 Claude Code 两条映射，不读取数据库启用标记／自定义 mapping。** 禁用适配不阻止 `init` 创建兼容链接，新增 mapping 不生效。
 
 ## 示例：名称覆盖与最终路径
 

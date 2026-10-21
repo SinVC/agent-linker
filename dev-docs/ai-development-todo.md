@@ -1,5 +1,7 @@
 # AI Development TODO
 
+当前命名（2026-10-21）：命令为 `aglink harness`，模块为 `core::harness`。下列阶段记录中的 Framework 指同一适配对象；历史验证命令保留原样，旧 `framework` 命令已移除，复跑时须改为 `harness`。
+
 本文件用于让 AI 分次、可验证地推进 Agent Linker 实现。每次开发会话应只认领一个小阶段，完成验证后再勾选任务。
 
 ## 使用规则
@@ -53,7 +55,7 @@
 
 ## 阶段 2：Project Init 与 Manifest
 
-条件文档：`dev-docs/modules/02-project-init-manifest.md`、`dev-docs/modules/03-framework-adapter.md`。
+条件文档：`dev-docs/modules/02-project-init-manifest.md`、`dev-docs/modules/03-harness-adapter.md`。
 
 目标：完成 `aglink init` 的真实源结构、Claude 兼容链接和 `.agents/links.toml` 管理。
 
@@ -75,7 +77,7 @@
 
 ## 阶段 3：Global Store、Registry 与 Framework Adapter
 
-条件文档：`dev-docs/modules/03-framework-adapter.md`、`dev-docs/modules/04-global-store-registry.md`。
+条件文档：`dev-docs/modules/03-harness-adapter.md`、`dev-docs/modules/04-global-store-registry.md`。
 
 目标：完成全局 SQLite 基础设施和内置框架数据模型。
 

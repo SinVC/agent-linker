@@ -6,7 +6,7 @@ use crate::core::{
         MigrationReport,
     },
     error::{Error, Result},
-    framework::{self, AddFrameworkMapping, StoredFramework, StoredFrameworkMapping},
+    harness::{self, AddHarnessMapping, StoredHarness, StoredHarnessMapping},
     linkable::{LinkableItem, LinkableItemType},
     manifest::{init_current_project, InitProjectReport},
     project_links::{
@@ -26,7 +26,7 @@ pub enum Command {
     Init,
     Config(ConfigCommand),
     Db(DbCommand),
-    Framework(FrameworkCommand),
+    Harness(HarnessCommand),
     Skill(LinkableCommand),
     Resource(LinkableCommand),
     Group(GroupCommand),
@@ -55,7 +55,7 @@ pub enum DbCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FrameworkCommand {
+pub enum HarnessCommand {
     List,
     Show {
         name: String,
@@ -193,15 +193,15 @@ pub enum CommandReport {
     DbMigrate(MigrationReport),
     DbBackup(DbBackupReport),
     DbCheck(DbCheckReport),
-    FrameworkList(Vec<StoredFramework>),
-    FrameworkShow(StoredFramework),
-    FrameworkEnabled {
+    HarnessList(Vec<StoredHarness>),
+    HarnessShow(StoredHarness),
+    HarnessEnabled {
         name: String,
         enabled: bool,
     },
-    FrameworkMappingList(Vec<StoredFrameworkMapping>),
-    FrameworkMappingAdded(StoredFrameworkMapping),
-    FrameworkMappingRemoved(StoredFrameworkMapping),
+    HarnessMappingList(Vec<StoredHarnessMapping>),
+    HarnessMappingAdded(StoredHarnessMapping),
+    HarnessMappingRemoved(StoredHarnessMapping),
     LinkableAdded(LinkableItem),
     LinkableList {
         item_type: LinkableItemType,
@@ -242,7 +242,7 @@ pub fn run(command: Command) -> Result<CommandReport> {
         Command::Init => Ok(CommandReport::Init(init_current_project()?)),
         Command::Config(command) => run_config(command),
         Command::Db(command) => run_db(command),
-        Command::Framework(command) => run_framework(command),
+        Command::Harness(command) => run_harness(command),
         Command::Skill(command) => run_linkable(command, LinkableItemType::Skill),
         Command::Resource(command) => run_linkable(command, LinkableItemType::Resource),
         Command::Group(command) => run_group(command),
@@ -296,58 +296,55 @@ fn run_db(command: DbCommand) -> Result<CommandReport> {
     }
 }
 
-fn run_framework(command: FrameworkCommand) -> Result<CommandReport> {
+fn run_harness(command: HarnessCommand) -> Result<CommandReport> {
     let resolution = db::resolve_database_path()?;
     match command {
-        FrameworkCommand::List => Ok(CommandReport::FrameworkList(framework::list_frameworks(
+        HarnessCommand::List => Ok(CommandReport::HarnessList(harness::list_harnesses(
             &resolution,
         )?)),
-        FrameworkCommand::Show { name } => Ok(CommandReport::FrameworkShow(
-            framework::show_framework(&resolution, &name)?,
-        )),
-        FrameworkCommand::Enable { name } => {
-            framework::enable_framework(&resolution, &name)?;
-            Ok(CommandReport::FrameworkEnabled {
+        HarnessCommand::Show { name } => Ok(CommandReport::HarnessShow(harness::show_harness(
+            &resolution,
+            &name,
+        )?)),
+        HarnessCommand::Enable { name } => {
+            harness::enable_harness(&resolution, &name)?;
+            Ok(CommandReport::HarnessEnabled {
                 name,
                 enabled: true,
             })
         }
-        FrameworkCommand::Disable { name } => {
-            framework::disable_framework(&resolution, &name)?;
-            Ok(CommandReport::FrameworkEnabled {
+        HarnessCommand::Disable { name } => {
+            harness::disable_harness(&resolution, &name)?;
+            Ok(CommandReport::HarnessEnabled {
                 name,
                 enabled: false,
             })
         }
-        FrameworkCommand::MappingList { name } => {
+        HarnessCommand::MappingList { name } => {
             let mappings = if let Some(name) = name {
-                framework::list_mappings_for_framework(&resolution, &name)?
+                harness::list_mappings_for_harness(&resolution, &name)?
             } else {
-                framework::list_all_mappings(&resolution)?
+                harness::list_all_mappings(&resolution)?
             };
-            Ok(CommandReport::FrameworkMappingList(mappings))
+            Ok(CommandReport::HarnessMappingList(mappings))
         }
-        FrameworkCommand::MappingAdd {
+        HarnessCommand::MappingAdd {
             name,
             source,
             link,
             kind,
-        } => Ok(CommandReport::FrameworkMappingAdded(
-            framework::add_mapping(
-                &resolution,
-                AddFrameworkMapping {
-                    framework: name,
-                    source_path: source,
-                    link_path: link,
-                    link_kind: kind,
-                },
-            )?,
+        } => Ok(CommandReport::HarnessMappingAdded(harness::add_mapping(
+            &resolution,
+            AddHarnessMapping {
+                harness: name,
+                source_path: source,
+                link_path: link,
+                link_kind: kind,
+            },
+        )?)),
+        HarnessCommand::MappingRemove { name, link } => Ok(CommandReport::HarnessMappingRemoved(
+            harness::remove_mapping(&resolution, &name, &link)?,
         )),
-        FrameworkCommand::MappingRemove { name, link } => {
-            Ok(CommandReport::FrameworkMappingRemoved(
-                framework::remove_mapping(&resolution, &name, &link)?,
-            ))
-        }
     }
 }
 

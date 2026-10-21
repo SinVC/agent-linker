@@ -1,4 +1,5 @@
-//! Agent framework adapter entry point.
+//! Agent harness adapter entry point.
+//! SQL identifiers retain their legacy `framework*` names for database compatibility.
 
 use std::{
     path::{Component, Path, PathBuf},
@@ -15,7 +16,7 @@ use crate::core::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FrameworkDefinition {
+pub struct HarnessDefinition {
     pub id: String,
     pub name: String,
     pub display_name: String,
@@ -24,10 +25,10 @@ pub struct FrameworkDefinition {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FrameworkMapping {
+pub struct HarnessMapping {
     pub id: String,
-    pub framework_id: String,
-    pub framework_name: String,
+    pub harness_id: String,
+    pub harness_name: String,
     pub item_id: String,
     pub item_name: String,
     pub source_path: PathBuf,
@@ -36,7 +37,7 @@ pub struct FrameworkMapping {
     pub required: bool,
 }
 
-impl FrameworkMapping {
+impl HarnessMapping {
     pub fn source_in(&self, project_root: &Path) -> PathBuf {
         project_root.join(&self.source_path)
     }
@@ -46,24 +47,24 @@ impl FrameworkMapping {
     }
 }
 
-pub fn built_in_claude() -> FrameworkDefinition {
-    FrameworkDefinition {
+pub fn built_in_claude() -> HarnessDefinition {
+    HarnessDefinition {
         id: "claude".to_string(),
         name: "claude".to_string(),
-        display_name: "Claude".to_string(),
+        display_name: "Claude Code".to_string(),
         built_in: true,
         enabled_by_default: true,
     }
 }
 
-pub fn default_init_mappings() -> Vec<FrameworkMapping> {
+pub fn default_init_mappings() -> Vec<HarnessMapping> {
     let claude = built_in_claude();
 
     vec![
-        FrameworkMapping {
+        HarnessMapping {
             id: "init:claude:agents-md".to_string(),
-            framework_id: claude.id.clone(),
-            framework_name: claude.name.clone(),
+            harness_id: claude.id.clone(),
+            harness_name: claude.name.clone(),
             item_id: "project:agents-md".to_string(),
             item_name: "AGENTS.md".to_string(),
             source_path: PathBuf::from("AGENTS.md"),
@@ -71,10 +72,10 @@ pub fn default_init_mappings() -> Vec<FrameworkMapping> {
             link_kind: LinkKind::File,
             required: true,
         },
-        FrameworkMapping {
+        HarnessMapping {
             id: "init:claude:skills-dir".to_string(),
-            framework_id: claude.id,
-            framework_name: claude.name,
+            harness_id: claude.id,
+            harness_name: claude.name,
             item_id: "project:skills-dir".to_string(),
             item_name: ".agents/skills".to_string(),
             source_path: PathBuf::from(".agents").join("skills"),
@@ -86,7 +87,7 @@ pub fn default_init_mappings() -> Vec<FrameworkMapping> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StoredFramework {
+pub struct StoredHarness {
     pub id: String,
     pub name: String,
     pub display_name: String,
@@ -95,13 +96,13 @@ pub struct StoredFramework {
     pub enabled: bool,
     pub created_at: String,
     pub updated_at: String,
-    pub mappings: Vec<StoredFrameworkMapping>,
+    pub mappings: Vec<StoredHarnessMapping>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StoredFrameworkMapping {
+pub struct StoredHarnessMapping {
     pub id: String,
-    pub framework_id: String,
+    pub harness_id: String,
     pub source_path: PathBuf,
     pub link_path: PathBuf,
     pub link_kind: LinkKind,
@@ -111,14 +112,14 @@ pub struct StoredFrameworkMapping {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AddFrameworkMapping {
-    pub framework: String,
+pub struct AddHarnessMapping {
+    pub harness: String,
     pub source_path: PathBuf,
     pub link_path: PathBuf,
     pub link_kind: LinkKind,
 }
 
-pub fn list_frameworks(resolution: &DbPathResolution) -> Result<Vec<StoredFramework>> {
+pub fn list_harnesses(resolution: &DbPathResolution) -> Result<Vec<StoredHarness>> {
     let connection = open_migrated_connection(resolution)?;
     let mut statement = connection.prepare(
         r#"
@@ -129,7 +130,7 @@ pub fn list_frameworks(resolution: &DbPathResolution) -> Result<Vec<StoredFramew
     )?;
 
     let rows = statement.query_map([], |row| {
-        Ok(StoredFramework {
+        Ok(StoredHarness {
             id: row.get(0)?,
             name: row.get(1)?,
             display_name: row.get(2)?,
@@ -142,31 +143,28 @@ pub fn list_frameworks(resolution: &DbPathResolution) -> Result<Vec<StoredFramew
         })
     })?;
 
-    let mut frameworks = Vec::new();
+    let mut harnesses = Vec::new();
     for row in rows {
-        let mut framework = row?;
-        framework.mappings = list_framework_mappings(&connection, Some(&framework.id))?;
-        frameworks.push(framework);
+        let mut harness = row?;
+        harness.mappings = list_harness_mappings(&connection, Some(&harness.id))?;
+        harnesses.push(harness);
     }
 
-    Ok(frameworks)
+    Ok(harnesses)
 }
 
-pub fn show_framework(
-    resolution: &DbPathResolution,
-    framework_id: &str,
-) -> Result<StoredFramework> {
+pub fn show_harness(resolution: &DbPathResolution, harness_id: &str) -> Result<StoredHarness> {
     let connection = open_migrated_connection(resolution)?;
-    let mut framework = connection
+    let mut harness = connection
         .query_row(
             r#"
             SELECT id, name, display_name, built_in, enabled_by_default, enabled, created_at, updated_at
             FROM frameworks
             WHERE id = ?1 OR name = ?1
             "#,
-            params![framework_id],
+            params![harness_id],
             |row| {
-                Ok(StoredFramework {
+                Ok(StoredHarness {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     display_name: row.get(2)?,
@@ -180,36 +178,36 @@ pub fn show_framework(
             },
         )
         .optional()?
-        .ok_or_else(|| Error::database(format!("unknown framework `{framework_id}`")))?;
+        .ok_or_else(|| Error::database(format!("unknown harness `{harness_id}`")))?;
 
-    framework.mappings = list_framework_mappings(&connection, Some(&framework.id))?;
-    Ok(framework)
+    harness.mappings = list_harness_mappings(&connection, Some(&harness.id))?;
+    Ok(harness)
 }
 
-pub fn enable_framework(resolution: &DbPathResolution, framework_id: &str) -> Result<()> {
-    set_framework_enabled(resolution, framework_id, true)
+pub fn enable_harness(resolution: &DbPathResolution, harness_id: &str) -> Result<()> {
+    set_harness_enabled(resolution, harness_id, true)
 }
 
-pub fn disable_framework(resolution: &DbPathResolution, framework_id: &str) -> Result<()> {
-    set_framework_enabled(resolution, framework_id, false)
+pub fn disable_harness(resolution: &DbPathResolution, harness_id: &str) -> Result<()> {
+    set_harness_enabled(resolution, harness_id, false)
 }
 
-pub fn list_all_mappings(resolution: &DbPathResolution) -> Result<Vec<StoredFrameworkMapping>> {
+pub fn list_all_mappings(resolution: &DbPathResolution) -> Result<Vec<StoredHarnessMapping>> {
     let connection = open_migrated_connection(resolution)?;
-    list_framework_mappings(&connection, None)
+    list_harness_mappings(&connection, None)
 }
 
-pub fn list_mappings_for_framework(
+pub fn list_mappings_for_harness(
     resolution: &DbPathResolution,
-    framework_id: &str,
-) -> Result<Vec<StoredFrameworkMapping>> {
-    let framework = show_framework(resolution, framework_id)?;
-    Ok(framework.mappings)
+    harness_id: &str,
+) -> Result<Vec<StoredHarnessMapping>> {
+    let harness = show_harness(resolution, harness_id)?;
+    Ok(harness.mappings)
 }
 
-pub fn enabled_framework_mappings(
+pub fn enabled_harness_mappings(
     resolution: &DbPathResolution,
-) -> Result<Vec<StoredFrameworkMapping>> {
+) -> Result<Vec<StoredHarnessMapping>> {
     let connection = open_migrated_connection(resolution)?;
     let mut statement = connection.prepare(
         r#"
@@ -232,12 +230,12 @@ pub fn enabled_framework_mappings(
 
 pub fn add_mapping(
     resolution: &DbPathResolution,
-    request: AddFrameworkMapping,
-) -> Result<StoredFrameworkMapping> {
+    request: AddHarnessMapping,
+) -> Result<StoredHarnessMapping> {
     validate_mapping_path(&request.source_path, "source path")?;
     validate_mapping_path(&request.link_path, "link path")?;
     let connection = open_migrated_connection(resolution)?;
-    let framework_id = find_framework_id(&connection, &request.framework)?;
+    let harness_id = find_harness_id(&connection, &request.harness)?;
     let source_text = path_to_db_text(&request.source_path, "source path")?;
     let link_text = path_to_db_text(&request.link_path, "link path")?;
 
@@ -248,19 +246,19 @@ pub fn add_mapping(
             FROM framework_mappings
             WHERE framework_id = ?1 AND link_path = ?2
             "#,
-            params![framework_id, link_text],
+            params![harness_id, link_text],
             |row| row.get(0),
         )
         .optional()?;
     if existing.is_some() {
         return Err(Error::invalid_arguments(format!(
-            "framework `{}` already has mapping for `{}`",
-            request.framework,
+            "harness `{}` already has mapping for `{}`",
+            request.harness,
             request.link_path.display()
         )));
     }
 
-    let id = format!("mapping:{}:{}", framework_id, timestamp_nanos());
+    let id = format!("mapping:{}:{}", harness_id, timestamp_nanos());
     let now = timestamp();
     connection.execute(
         r#"
@@ -271,7 +269,7 @@ pub fn add_mapping(
         "#,
         params![
             id,
-            framework_id,
+            harness_id,
             source_text,
             link_text,
             request.link_kind.to_string(),
@@ -284,18 +282,18 @@ pub fn add_mapping(
 
 pub fn remove_mapping(
     resolution: &DbPathResolution,
-    framework: &str,
+    harness: &str,
     link_path: &Path,
-) -> Result<StoredFrameworkMapping> {
+) -> Result<StoredHarnessMapping> {
     validate_mapping_path(link_path, "link path")?;
     let connection = open_migrated_connection(resolution)?;
-    let framework_id = find_framework_id(&connection, framework)?;
+    let harness_id = find_harness_id(&connection, harness)?;
     let link_text = path_to_db_text(link_path, "link path")?;
-    let mapping = find_mapping_by_framework_and_link(&connection, &framework_id, &link_text)?;
+    let mapping = find_mapping_by_harness_and_link(&connection, &harness_id, &link_text)?;
 
     if mapping.required {
         return Err(Error::invalid_arguments(format!(
-            "required framework mapping `{}` cannot be removed",
+            "required harness mapping `{}` cannot be removed",
             mapping.id
         )));
     }
@@ -307,9 +305,9 @@ pub fn remove_mapping(
     Ok(mapping)
 }
 
-fn set_framework_enabled(
+fn set_harness_enabled(
     resolution: &DbPathResolution,
-    framework_id: &str,
+    harness_id: &str,
     enabled: bool,
 ) -> Result<()> {
     let connection = open_migrated_connection(resolution)?;
@@ -319,31 +317,29 @@ fn set_framework_enabled(
         SET enabled = ?2, updated_at = ?3
         WHERE id = ?1 OR name = ?1
         "#,
-        params![framework_id, bool_to_i64(enabled), timestamp()],
+        params![harness_id, bool_to_i64(enabled), timestamp()],
     )?;
 
     if changed == 0 {
-        return Err(Error::database(format!(
-            "unknown framework `{framework_id}`"
-        )));
+        return Err(Error::database(format!("unknown harness `{harness_id}`")));
     }
 
     Ok(())
 }
 
-fn list_framework_mappings(
+fn list_harness_mappings(
     connection: &rusqlite::Connection,
-    framework_id: Option<&str>,
-) -> Result<Vec<StoredFrameworkMapping>> {
-    let (sql, bind_framework) = match framework_id {
-        Some(framework_id) => (
+    harness_id: Option<&str>,
+) -> Result<Vec<StoredHarnessMapping>> {
+    let (sql, bind_harness) = match harness_id {
+        Some(harness_id) => (
             r#"
             SELECT id, framework_id, source_path, link_path, link_kind, required, created_at, updated_at
             FROM framework_mappings
             WHERE framework_id = ?1
             ORDER BY id
             "#,
-            Some(framework_id),
+            Some(harness_id),
         ),
         None => (
             r#"
@@ -358,9 +354,9 @@ fn list_framework_mappings(
     let mut statement = connection.prepare(sql)?;
     let mut mappings = Vec::new();
 
-    match bind_framework {
-        Some(framework_id) => {
-            let rows = statement.query_map(params![framework_id], stored_mapping_from_row)?;
+    match bind_harness {
+        Some(harness_id) => {
+            let rows = statement.query_map(params![harness_id], stored_mapping_from_row)?;
             for row in rows {
                 mappings.push(row?);
             }
@@ -376,11 +372,11 @@ fn list_framework_mappings(
     Ok(mappings)
 }
 
-fn stored_mapping_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredFrameworkMapping> {
+fn stored_mapping_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredHarnessMapping> {
     let link_kind: String = row.get(4)?;
-    Ok(StoredFrameworkMapping {
+    Ok(StoredHarnessMapping {
         id: row.get(0)?,
-        framework_id: row.get(1)?,
+        harness_id: row.get(1)?,
         source_path: PathBuf::from(row.get::<_, String>(2)?),
         link_path: PathBuf::from(row.get::<_, String>(3)?),
         link_kind: LinkKind::from_str(&link_kind).map_err(|error| {
@@ -400,21 +396,18 @@ fn int_to_bool(value: i64) -> bool {
     value != 0
 }
 
-fn find_framework_id(connection: &rusqlite::Connection, framework: &str) -> Result<String> {
+fn find_harness_id(connection: &rusqlite::Connection, harness: &str) -> Result<String> {
     connection
         .query_row(
             "SELECT id FROM frameworks WHERE id = ?1 OR name = ?1",
-            params![framework],
+            params![harness],
             |row| row.get(0),
         )
         .optional()?
-        .ok_or_else(|| Error::database(format!("unknown framework `{framework}`")))
+        .ok_or_else(|| Error::database(format!("unknown harness `{harness}`")))
 }
 
-fn find_mapping_by_id(
-    connection: &rusqlite::Connection,
-    id: &str,
-) -> Result<StoredFrameworkMapping> {
+fn find_mapping_by_id(connection: &rusqlite::Connection, id: &str) -> Result<StoredHarnessMapping> {
     connection
         .query_row(
             r#"
@@ -428,11 +421,11 @@ fn find_mapping_by_id(
         .map_err(Error::from)
 }
 
-fn find_mapping_by_framework_and_link(
+fn find_mapping_by_harness_and_link(
     connection: &rusqlite::Connection,
-    framework_id: &str,
+    harness_id: &str,
     link_path: &str,
-) -> Result<StoredFrameworkMapping> {
+) -> Result<StoredHarnessMapping> {
     connection
         .query_row(
             r#"
@@ -440,13 +433,13 @@ fn find_mapping_by_framework_and_link(
             FROM framework_mappings
             WHERE framework_id = ?1 AND link_path = ?2
             "#,
-            params![framework_id, link_path],
+            params![harness_id, link_path],
             stored_mapping_from_row,
         )
         .optional()?
         .ok_or_else(|| {
             Error::database(format!(
-                "framework `{framework_id}` has no mapping for `{link_path}`"
+                "harness `{harness_id}` has no mapping for `{link_path}`"
             ))
         })
 }
@@ -485,9 +478,9 @@ fn path_to_db_text(path: &Path, label: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        add_mapping, default_init_mappings, disable_framework, enable_framework,
-        enabled_framework_mappings, list_all_mappings, list_frameworks, remove_mapping,
-        show_framework, AddFrameworkMapping,
+        add_mapping, default_init_mappings, disable_harness, enable_harness,
+        enabled_harness_mappings, list_all_mappings, list_harnesses, remove_mapping, show_harness,
+        AddHarnessMapping,
     };
     use crate::core::db::{migrate_database, DbPathReason, DbPathResolution};
     use crate::core::symlink::LinkKind;
@@ -500,7 +493,7 @@ mod tests {
         let mappings = default_init_mappings();
 
         assert_eq!(mappings.len(), 2);
-        assert_eq!(mappings[0].framework_name, "claude");
+        assert_eq!(mappings[0].harness_name, "claude");
         assert_eq!(mappings[0].source_path, PathBuf::from("AGENTS.md"));
         assert_eq!(mappings[0].link_path, PathBuf::from("CLAUDE.md"));
         assert_eq!(mappings[0].link_kind, LinkKind::File);
@@ -516,13 +509,13 @@ mod tests {
     }
 
     #[test]
-    fn framework_api_lists_shows_toggles_and_returns_mappings() {
+    fn harness_api_lists_shows_toggles_and_returns_mappings() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let temp_dir = std::env::temp_dir().join(format!(
-            "agent-linker-framework-test-{}-{unique}",
+            "agent-linker-harness-test-{}-{unique}",
             std::process::id()
         ));
         fs::create_dir(&temp_dir).unwrap();
@@ -533,14 +526,14 @@ mod tests {
 
         migrate_database(&resolution).unwrap();
 
-        let frameworks = list_frameworks(&resolution).unwrap();
-        assert_eq!(frameworks.len(), 1);
-        assert_eq!(frameworks[0].name, "claude");
-        assert!(frameworks[0].enabled);
-        assert_eq!(frameworks[0].mappings.len(), 2);
+        let harnesses = list_harnesses(&resolution).unwrap();
+        assert_eq!(harnesses.len(), 1);
+        assert_eq!(harnesses[0].name, "claude");
+        assert!(harnesses[0].enabled);
+        assert_eq!(harnesses[0].mappings.len(), 2);
 
-        let claude = show_framework(&resolution, "claude").unwrap();
-        assert_eq!(claude.display_name, "Claude");
+        let claude = show_harness(&resolution, "claude").unwrap();
+        assert_eq!(claude.display_name, "Claude Code");
 
         let mappings = list_all_mappings(&resolution).unwrap();
         assert_eq!(mappings.len(), 2);
@@ -550,22 +543,22 @@ mod tests {
                 && mapping.link_kind == LinkKind::File
         }));
 
-        disable_framework(&resolution, "claude").unwrap();
-        assert!(enabled_framework_mappings(&resolution).unwrap().is_empty());
-        enable_framework(&resolution, "claude").unwrap();
-        assert_eq!(enabled_framework_mappings(&resolution).unwrap().len(), 2);
+        disable_harness(&resolution, "claude").unwrap();
+        assert!(enabled_harness_mappings(&resolution).unwrap().is_empty());
+        enable_harness(&resolution, "claude").unwrap();
+        assert_eq!(enabled_harness_mappings(&resolution).unwrap().len(), 2);
 
         let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]
-    fn framework_mapping_add_and_remove_manage_non_required_mappings() {
+    fn harness_mapping_add_and_remove_manage_non_required_mappings() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let temp_dir = std::env::temp_dir().join(format!(
-            "agent-linker-framework-mapping-test-{}-{unique}",
+            "agent-linker-harness-mapping-test-{}-{unique}",
             std::process::id()
         ));
         fs::create_dir(&temp_dir).unwrap();
@@ -577,8 +570,8 @@ mod tests {
 
         let mapping = add_mapping(
             &resolution,
-            AddFrameworkMapping {
-                framework: "claude".to_string(),
+            AddHarnessMapping {
+                harness: "claude".to_string(),
                 source_path: PathBuf::from("AGENTS.md"),
                 link_path: PathBuf::from(".claude").join("extra.md"),
                 link_kind: LinkKind::File,

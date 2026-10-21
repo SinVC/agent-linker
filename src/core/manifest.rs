@@ -9,7 +9,7 @@ use std::{
 
 use crate::core::{
     error::{Error, Result},
-    framework::{default_init_mappings, FrameworkMapping},
+    harness::{default_init_mappings, HarnessMapping},
     symlink::{
         default_provider, ensure_symlink, CreateSymlinkOptions, CreateSymlinkOutcome, LinkKind,
         SymlinkBackend, SymlinkProvider,
@@ -27,7 +27,8 @@ const MANAGED_GITIGNORE_PATTERNS: &[&str] = &[".claude/", ".agents/skills/", ".a
 pub struct LinkRecord {
     pub id: String,
     pub scope: String,
-    pub framework_name: String,
+    /// Serialized as `framework_name` in manifest schema 1 for compatibility.
+    pub harness_name: String,
     pub item_id: String,
     pub item_name: String,
     pub source_path: PathBuf,
@@ -65,7 +66,7 @@ impl Manifest {
         for link in &self.links {
             require_non_empty("id", &link.id)?;
             require_non_empty("scope", &link.scope)?;
-            require_non_empty("framework_name", &link.framework_name)?;
+            require_non_empty("framework_name", &link.harness_name)?;
             require_non_empty("item_id", &link.item_id)?;
             require_non_empty("item_name", &link.item_name)?;
             require_non_empty("created_by_command", &link.created_by_command)?;
@@ -158,7 +159,7 @@ pub fn init_project_with_provider(
 
     let mut manifest = load_manifest(project_root)?;
 
-    ensure_framework_parent_dirs(project_root, &default_init_mappings(), &mut report)?;
+    ensure_harness_parent_dirs(project_root, &default_init_mappings(), &mut report)?;
     update_gitignore(project_root, &mut report)?;
 
     for mapping in default_init_mappings() {
@@ -237,9 +238,9 @@ fn validate_project_root(project_root: &Path) -> Result<()> {
     }
 }
 
-fn ensure_framework_parent_dirs(
+fn ensure_harness_parent_dirs(
     project_root: &Path,
-    mappings: &[FrameworkMapping],
+    mappings: &[HarnessMapping],
     report: &mut InitProjectReport,
 ) -> Result<()> {
     let mut parents = BTreeSet::new();
@@ -405,13 +406,13 @@ fn replace_or_append_managed_block(original: &str, block: &str) -> Result<String
     }
 }
 
-fn record_from_mapping(mapping: &FrameworkMapping, backend: SymlinkBackend) -> LinkRecord {
+fn record_from_mapping(mapping: &HarnessMapping, backend: SymlinkBackend) -> LinkRecord {
     let now = timestamp();
 
     LinkRecord {
         id: mapping.id.to_string(),
         scope: "project".to_string(),
-        framework_name: mapping.framework_name.to_string(),
+        harness_name: mapping.harness_name.to_string(),
         item_id: mapping.item_id.to_string(),
         item_name: mapping.item_name.to_string(),
         source_path: mapping.source_path.clone(),
@@ -432,7 +433,7 @@ fn serialize_manifest(manifest: &Manifest) -> String {
         output.push_str("[[links]]\n");
         push_kv(&mut output, "id", &link.id);
         push_kv(&mut output, "scope", &link.scope);
-        push_kv(&mut output, "framework_name", &link.framework_name);
+        push_kv(&mut output, "framework_name", &link.harness_name);
         push_kv(&mut output, "item_id", &link.item_id);
         push_kv(&mut output, "item_name", &link.item_name);
         push_kv(
@@ -557,7 +558,7 @@ fn link_from_table(mut table: BTreeMap<String, String>) -> Result<LinkRecord> {
     let link = LinkRecord {
         id,
         scope: required_field(&mut table, "scope")?,
-        framework_name: required_field(&mut table, "framework_name")?,
+        harness_name: required_field(&mut table, "framework_name")?,
         item_id: required_field(&mut table, "item_id")?,
         item_name: required_field(&mut table, "item_name")?,
         source_path: PathBuf::from(required_field(&mut table, "source_path")?),
@@ -667,7 +668,7 @@ fn unescape_manifest_string(value: &str, line_number: usize) -> Result<String> {
 mod tests {
     use super::{
         init_project_with_provider, load_manifest, managed_gitignore_block, parse_manifest,
-        replace_or_append_managed_block, save_manifest, Manifest,
+        replace_or_append_managed_block, save_manifest, serialize_manifest, Manifest,
     };
     use crate::core::{
         error::Error,
@@ -701,6 +702,32 @@ mod tests {
 
         assert_eq!(manifest, reparsed);
         assert_eq!(manifest.links.len(), 2);
+    }
+
+    #[test]
+    fn legacy_framework_name_manifest_remains_readable_and_writable() {
+        let legacy = r#"schema_version = 1
+[[links]]
+id = "init:claude:agents-md"
+scope = "project"
+framework_name = "claude"
+item_id = "project:agents-md"
+item_name = "AGENTS.md"
+source_path = "AGENTS.md"
+link_path = "CLAUDE.md"
+link_kind = "file"
+provider_backend = "mock"
+created_by_command = "init"
+created_at = "unix:1"
+updated_at = "unix:1"
+"#;
+        let manifest = parse_manifest(legacy).unwrap();
+        assert_eq!(manifest.links[0].harness_name, "claude");
+        assert_eq!(manifest.links[0].id, "init:claude:agents-md");
+        let saved = serialize_manifest(&manifest);
+        assert!(saved.contains("framework_name = \"claude\""));
+        assert!(!saved.contains("harness_name ="));
+        assert_eq!(parse_manifest(&saved).unwrap(), manifest);
     }
 
     #[test]
@@ -751,7 +778,7 @@ mod tests {
         let manifest = load_manifest(temp_dir.path()).unwrap();
         assert_eq!(manifest.links.len(), 2);
         assert!(manifest.links.iter().any(|link| {
-            link.framework_name == "claude"
+            link.harness_name == "claude"
                 && link.source_path == PathBuf::from("AGENTS.md")
                 && link.link_path == PathBuf::from("CLAUDE.md")
         }));

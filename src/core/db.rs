@@ -1,4 +1,5 @@
 //! Global SQLite database entry point.
+//! Legacy `framework*` table and column names are retained; harness is the domain term.
 
 use std::{
     env, fs,
@@ -92,7 +93,7 @@ pub struct DbCheckReport {
     pub writable: bool,
     pub schema_version: Option<u32>,
     pub latest_schema_version: u32,
-    pub framework_count: Option<u32>,
+    pub harness_count: Option<u32>,
     pub mapping_count: Option<u32>,
 }
 
@@ -121,7 +122,7 @@ impl DbCheckReport {
         self.exists
             && self.writable
             && self.schema_version == Some(self.latest_schema_version)
-            && self.framework_count.unwrap_or(0) > 0
+            && self.harness_count.unwrap_or(0) > 0
             && self.mapping_count.unwrap_or(0) > 0
     }
 }
@@ -165,7 +166,7 @@ pub fn migrate_database(resolution: &DbPathResolution) -> Result<MigrationReport
     let connection = open_writable_connection(&resolution.path)?;
     let previous_version = schema_version(&connection)?;
     migrate_connection(&connection, previous_version)?;
-    seed_builtin_frameworks(&connection)?;
+    seed_builtin_harnesses(&connection)?;
     let current_version = schema_version(&connection)?;
 
     Ok(MigrationReport {
@@ -190,7 +191,7 @@ pub fn check_database(resolution: &DbPathResolution) -> Result<DbCheckReport> {
             writable: false,
             schema_version: None,
             latest_schema_version: LATEST_SCHEMA_VERSION,
-            framework_count: None,
+            harness_count: None,
             mapping_count: None,
         });
     }
@@ -199,10 +200,10 @@ pub fn check_database(resolution: &DbPathResolution) -> Result<DbCheckReport> {
     let connection =
         Connection::open_with_flags(&resolution.path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let schema_version = schema_version(&connection)?;
-    let (framework_count, mapping_count) = if schema_version >= LATEST_SCHEMA_VERSION {
+    let (harness_count, mapping_count) = if schema_version >= LATEST_SCHEMA_VERSION {
         (
-            Some(count_rows(&connection, CountTable::Frameworks)?),
-            Some(count_rows(&connection, CountTable::FrameworkMappings)?),
+            Some(count_rows(&connection, CountTable::Harnesses)?),
+            Some(count_rows(&connection, CountTable::HarnessMappings)?),
         )
     } else {
         (None, None)
@@ -215,7 +216,7 @@ pub fn check_database(resolution: &DbPathResolution) -> Result<DbCheckReport> {
         writable,
         schema_version: Some(schema_version),
         latest_schema_version: LATEST_SCHEMA_VERSION,
-        framework_count,
+        harness_count,
         mapping_count,
     })
 }
@@ -340,7 +341,7 @@ pub fn open_migrated_connection(resolution: &DbPathResolution) -> Result<Connect
     let connection = open_writable_connection(&resolution.path)?;
     let previous_version = schema_version(&connection)?;
     migrate_connection(&connection, previous_version)?;
-    seed_builtin_frameworks(&connection)?;
+    seed_builtin_harnesses(&connection)?;
     Ok(connection)
 }
 
@@ -454,7 +455,7 @@ fn migrate_connection(connection: &Connection, current_version: u32) -> Result<(
     Ok(())
 }
 
-fn seed_builtin_frameworks(connection: &Connection) -> Result<()> {
+fn seed_builtin_harnesses(connection: &Connection) -> Result<()> {
     let now = timestamp();
 
     connection.execute(
@@ -462,7 +463,7 @@ fn seed_builtin_frameworks(connection: &Connection) -> Result<()> {
         INSERT INTO frameworks
             (id, name, display_name, built_in, enabled_by_default, enabled, created_at, updated_at)
         VALUES
-            ('claude', 'claude', 'Claude', 1, 1, 1, ?1, ?1)
+            ('claude', 'claude', 'Claude Code', 1, 1, 1, ?1, ?1)
         ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             display_name = excluded.display_name,
@@ -500,7 +501,7 @@ fn seed_builtin_frameworks(connection: &Connection) -> Result<()> {
 fn seed_mapping(
     connection: &Connection,
     id: &str,
-    framework_id: &str,
+    harness_id: &str,
     source_path: &str,
     link_path: &str,
     link_kind: LinkKind,
@@ -523,7 +524,7 @@ fn seed_mapping(
         "#,
         params![
             id,
-            framework_id,
+            harness_id,
             source_path,
             link_path,
             link_kind.to_string(),
@@ -541,22 +542,22 @@ fn schema_version(connection: &Connection) -> Result<u32> {
 
 #[derive(Debug, Clone, Copy)]
 enum CountTable {
-    Frameworks,
-    FrameworkMappings,
+    Harnesses,
+    HarnessMappings,
 }
 
 impl CountTable {
     const fn count_sql(self) -> &'static str {
         match self {
-            CountTable::Frameworks => "SELECT COUNT(*) FROM frameworks",
-            CountTable::FrameworkMappings => "SELECT COUNT(*) FROM framework_mappings",
+            CountTable::Harnesses => "SELECT COUNT(*) FROM frameworks",
+            CountTable::HarnessMappings => "SELECT COUNT(*) FROM framework_mappings",
         }
     }
 
     const fn name(self) -> &'static str {
         match self {
-            CountTable::Frameworks => "frameworks",
-            CountTable::FrameworkMappings => "framework_mappings",
+            CountTable::Harnesses => "frameworks",
+            CountTable::HarnessMappings => "framework_mappings",
         }
     }
 }
@@ -666,7 +667,7 @@ mod tests {
         DbPathReason, DbPathResolution, TargetPlatform,
     };
     use crate::core::{
-        framework::{disable_framework, enable_framework, list_frameworks},
+        harness::{disable_harness, enable_harness, list_harnesses},
         test_support::TestDir,
     };
     use std::{fs, path::Path};
@@ -761,7 +762,7 @@ mod tests {
     }
 
     #[test]
-    fn migration_seeds_claude_framework_and_mappings() {
+    fn migration_seeds_claude_harness_and_mappings() {
         let temp_dir = TestDir::new("db-migrate");
         let resolution = DbPathResolution {
             path: temp_dir.path().join("store").join("agent-linker.db"),
@@ -774,14 +775,14 @@ mod tests {
 
         let check = check_database(&resolution).unwrap();
         assert!(check.is_ok());
-        assert_eq!(check.framework_count, Some(1));
+        assert_eq!(check.harness_count, Some(1));
         assert_eq!(check.mapping_count, Some(2));
 
-        let frameworks = list_frameworks(&resolution).unwrap();
-        assert_eq!(frameworks.len(), 1);
-        assert_eq!(frameworks[0].id, "claude");
-        assert!(frameworks[0].enabled);
-        assert_eq!(frameworks[0].mappings.len(), 2);
+        let harnesses = list_harnesses(&resolution).unwrap();
+        assert_eq!(harnesses.len(), 1);
+        assert_eq!(harnesses[0].id, "claude");
+        assert!(harnesses[0].enabled);
+        assert_eq!(harnesses[0].mappings.len(), 2);
     }
 
     #[test]
@@ -793,12 +794,12 @@ mod tests {
         };
 
         migrate_database(&resolution).unwrap();
-        disable_framework(&resolution, "claude").unwrap();
+        disable_harness(&resolution, "claude").unwrap();
         migrate_database(&resolution).unwrap();
-        assert!(!list_frameworks(&resolution).unwrap()[0].enabled);
+        assert!(!list_harnesses(&resolution).unwrap()[0].enabled);
 
-        enable_framework(&resolution, "claude").unwrap();
-        assert!(list_frameworks(&resolution).unwrap()[0].enabled);
+        enable_harness(&resolution, "claude").unwrap();
+        assert!(list_harnesses(&resolution).unwrap()[0].enabled);
     }
 
     #[test]

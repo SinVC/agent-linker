@@ -2,13 +2,13 @@
 
 ## 设计目标
 
-使用全局 SQLite 保存配置、Registry、Framework Adapter、Group 和机器级元数据，并与项目 manifest 明确分工。
+使用全局 SQLite 保存配置、Registry、Harness Adapter、Group 和机器级元数据，并与项目 manifest 明确分工。
 
 ## 职责边界
 
 - 解析全局数据库路径。
 - 管理 SQLite 连接和 schema migration。
-- 保存 Framework Adapter、Linkable Item Registry、Group 和用户级偏好。
+- 保存 Harness Adapter、Linkable Item Registry、Group 和用户级偏好。
 - 提供数据库路径、迁移和可写性诊断。
 - 向 command 层暴露结构化 API，不暴露 SQL。
 
@@ -18,6 +18,7 @@
 - 项目 manifest 不记录全局 Registry 或用户偏好。
 - MVP 不引入项目级配置文件。
 - SQLite schema 必须版本化 migration。
+- Harness 改名仅调整命令和领域术语；schema 保留 `frameworks`、`framework_mappings`、`framework_id`，已有数据、ID、启用标记和自定义映射继续可用。
 
 ## 接口契约
 
@@ -37,7 +38,7 @@
 
 SQLite 保存：
 
-- Framework Adapter 与映射规则。
+- Harness Adapter 与映射规则。
 - Skill / Resource / Linkable Item Registry。
 - Group 定义。
 - 来源路径、来源类型、版本、commit、描述等元数据。
@@ -55,5 +56,5 @@ SQLite 保存：
 
 - 数据库路径解析在三类主流平台和 portable 模式下可诊断。
 - migration 状态可检查、可显式执行。
-- Registry 与 Framework Adapter 可通过结构化 API 访问。
+- Registry 与 Harness Adapter 可通过结构化 API 访问。
 - manifest 与 SQLite 不互相替代、不重复承担对方职责。

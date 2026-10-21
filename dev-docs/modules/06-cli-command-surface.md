@@ -23,7 +23,7 @@
 aglink init
 aglink config ...
 aglink db ...
-aglink framework ...
+aglink harness ...
 aglink skill ...
 aglink resource ...
 aglink group ...
@@ -62,16 +62,16 @@ aglink db backup [path]
 aglink db check
 ```
 
-框架命令：
+Harness 适配命令（旧 `framework` 命令已移除，无兼容别名）：
 
 ```text
-aglink framework list
-aglink framework show <name>
-aglink framework enable <name>
-aglink framework disable <name>
-aglink framework mapping list <name>
-aglink framework mapping add <name> <source> <link> --kind file|dir
-aglink framework mapping remove <name> <link>
+aglink harness list
+aglink harness show <name>
+aglink harness enable <name>
+aglink harness disable <name>
+aglink harness mapping list [name]
+aglink harness mapping add <name> <source> <link> --kind <file|dir>
+aglink harness mapping remove <name> <link>
 ```
 
 Skill 命令：
@@ -149,6 +149,8 @@ aglink doctor
 
 ## 关键决策
 
+- Harness 指 Claude Code 等 Agent 运行系统，`harness` 管理其兼容路径与全局适配设置，不启停工具进程。
+- 当前 Harness 启用标记和自定义 mapping 仅保存在 SQLite；`init` 固定创建内置 Claude Code 链接，尚未读取这些设置。
 - `link` 根据 Registry 中的 Linkable Item 类型决定链接目标。
 - `--as` 只覆盖本次链接名，不修改 Registry alias。
 - `--target-dir` 只用于 Resource 的本次链接目标覆盖。
@@ -156,7 +158,7 @@ aglink doctor
 - `--dry-run` 覆盖 `link`、`unlink`、`clean`、`group link` 和 `group unlink`；`init` 在 MVP 中暂不支持 dry run。
 - `status --json` 的 `links[].status` 使用稳定 snake_case 机器值：`missing`、`correct_symlink`、`wrong_symlink_target`、`broken_symlink`、`existing_real_file`、`existing_real_directory`、`unsupported_file_type`。
 - `unlink` 和 `clean` 只处理 manifest 中由 `aglink` 管理的 symlink。
-- `doctor` 检查数据库、migration、manifest、Framework Adapter、Windows Broker 和 symlink 后端可用性。
+- `doctor` 检查数据库、migration、manifest、Harness Adapter、Windows Broker 和 symlink 后端可用性。
 - 临时验证场景由 `aglink link <name>` 和后续可能的 `aglink link --local <path>` 承担，`--local` 暂不进入正式命令集。
 
 ## 验收口径

@@ -1,5 +1,7 @@
 # Agent Linker — 开发前讨论清单
 
+> 历史讨论记录：现行规范见 [架构导航](../dev-docs/architecture.md)。当前术语为 Harness、命令为 `aglink harness`；下文保留早期 Framework 表述，旧命令已移除。
+
 > 本清单基于 [原始需求.md](file:///f:/00_Workspace/AI_Agents/agent_linker/docs/%E5%8E%9F%E5%A7%8B%E9%9C%82%E6%B1%82.md) 逐条分析，按开发流程顺序排列。  
 > 每个议题需逐一讨论并达成结论后，方可进入对应阶段的开发。  
 > 状态标记：⬜ 待讨论 · 🔵 讨论中 · ✅ 已确定

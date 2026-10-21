@@ -8,7 +8,7 @@
 
 - CLI 层：参数解析、调用 command、格式化输出。
 - command 层：业务编排。
-- core 层：领域模型、路径、错误、symlink、manifest、SQLite、registry、framework 和 linkable item。
+- core 层：领域模型、路径、错误、symlink、manifest、SQLite、registry、harness 和 linkable item。
 
 ## 架构约束
 
@@ -29,7 +29,7 @@ core 模块职责：
 - `manifest`：`.agents/links.toml` 读写、schema 校验和状态查询。
 - `db` / `migrations`：SQLite 连接、migration 和数据库诊断。
 - `registry`：Linkable Item Registry 持久化访问。
-- `framework`：Framework Adapter、mapping 和默认框架初始化。
+- `harness`：Harness Adapter、mapping 和默认 Harness 初始化。
 - `linkable`：Linkable Item 模型、业务约束、alias、kind 检测和默认 link path。
 
 依赖规则：
@@ -51,8 +51,8 @@ core 模块职责：
 
 允许扩展：
 
-- 新 Agent 框架通过 Framework Adapter 数据扩展。
-- 新 mapping 通过 `framework_mappings` 扩展。
+- 新 Agent Harness 通过 Harness Adapter 数据扩展。
+- 新 mapping 通过 Harness Adapter 数据扩展；SQLite 表名保留 `framework_mappings` 以兼容已有数据库。
 - 新 source ownership 模式通过预留字段扩展。
 - 后续可在不破坏 command 层的情况下替换或拆分 core 模块。
 

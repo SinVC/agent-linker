@@ -11,7 +11,7 @@ use serde::Serialize;
 use crate::{
     commands::{
         self, CleanCommand, Command, CommandReport, ConfigCommand, DbCommand, DoctorCommand,
-        FrameworkCommand, GroupCommand, LinkCommand, LinkableCommand, StatusCommand, UnlinkCommand,
+        GroupCommand, HarnessCommand, LinkCommand, LinkableCommand, StatusCommand, UnlinkCommand,
         UnlinkTarget,
     },
     core::{
@@ -49,9 +49,10 @@ enum CliCommand {
         #[command(subcommand)]
         command: CliDbCommand,
     },
-    Framework {
+    #[command(about = "Manage harness compatibility mappings and global settings")]
+    Harness {
         #[command(subcommand)]
-        command: CliFrameworkCommand,
+        command: CliHarnessCommand,
     },
     Skill {
         #[command(subcommand)]
@@ -90,7 +91,7 @@ enum CliDbCommand {
 }
 
 #[derive(Debug, Subcommand)]
-enum CliFrameworkCommand {
+enum CliHarnessCommand {
     List,
     Show {
         name: String,
@@ -103,12 +104,12 @@ enum CliFrameworkCommand {
     },
     Mapping {
         #[command(subcommand)]
-        command: CliFrameworkMappingCommand,
+        command: CliHarnessMappingCommand,
     },
 }
 
 #[derive(Debug, Subcommand)]
-enum CliFrameworkMappingCommand {
+enum CliHarnessMappingCommand {
     List {
         name: Option<String>,
     },
@@ -371,7 +372,7 @@ fn command_from_cli(cli: Cli) -> Result<Command> {
             CliDbCommand::Backup { path } => DbCommand::Backup { path },
             CliDbCommand::Check => DbCommand::Check,
         })),
-        CliCommand::Framework { command } => Ok(Command::Framework(framework_command(command))),
+        CliCommand::Harness { command } => Ok(Command::Harness(harness_command(command))),
         CliCommand::Skill { command } => Ok(Command::Skill(skill_command(command))),
         CliCommand::Resource { command } => Ok(Command::Resource(resource_command(command))),
         CliCommand::Group { command } => Ok(Command::Group(group_command(command))),
@@ -383,27 +384,27 @@ fn command_from_cli(cli: Cli) -> Result<Command> {
     }
 }
 
-fn framework_command(command: CliFrameworkCommand) -> FrameworkCommand {
+fn harness_command(command: CliHarnessCommand) -> HarnessCommand {
     match command {
-        CliFrameworkCommand::List => FrameworkCommand::List,
-        CliFrameworkCommand::Show { name } => FrameworkCommand::Show { name },
-        CliFrameworkCommand::Enable { name } => FrameworkCommand::Enable { name },
-        CliFrameworkCommand::Disable { name } => FrameworkCommand::Disable { name },
-        CliFrameworkCommand::Mapping { command } => match command {
-            CliFrameworkMappingCommand::List { name } => FrameworkCommand::MappingList { name },
-            CliFrameworkMappingCommand::Add {
+        CliHarnessCommand::List => HarnessCommand::List,
+        CliHarnessCommand::Show { name } => HarnessCommand::Show { name },
+        CliHarnessCommand::Enable { name } => HarnessCommand::Enable { name },
+        CliHarnessCommand::Disable { name } => HarnessCommand::Disable { name },
+        CliHarnessCommand::Mapping { command } => match command {
+            CliHarnessMappingCommand::List { name } => HarnessCommand::MappingList { name },
+            CliHarnessMappingCommand::Add {
                 name,
                 source,
                 link,
                 kind,
-            } => FrameworkCommand::MappingAdd {
+            } => HarnessCommand::MappingAdd {
                 name,
                 source,
                 link,
                 kind: kind.into(),
             },
-            CliFrameworkMappingCommand::Remove { name, link } => {
-                FrameworkCommand::MappingRemove { name, link }
+            CliHarnessMappingCommand::Remove { name, link } => {
+                HarnessCommand::MappingRemove { name, link }
             }
         },
     }
@@ -655,8 +656,8 @@ fn report_lines(report: &CommandReport, verbose: bool) -> Vec<String> {
             ];
             if verbose {
                 lines.push(format!("Reason: {}", report.reason.as_str()));
-                if let Some(count) = report.framework_count {
-                    lines.push(format!("Frameworks: {count}"));
+                if let Some(count) = report.harness_count {
+                    lines.push(format!("Harnesses: {count}"));
                 }
                 if let Some(count) = report.mapping_count {
                     lines.push(format!("Mappings: {count}"));
@@ -664,49 +665,49 @@ fn report_lines(report: &CommandReport, verbose: bool) -> Vec<String> {
             }
             lines
         }
-        CommandReport::FrameworkList(frameworks) => frameworks
+        CommandReport::HarnessList(harnesses) => harnesses
             .iter()
-            .map(|framework| {
+            .map(|harness| {
                 format!(
                     "{}\t{}\t{}",
-                    framework.name,
-                    framework.display_name,
-                    enabled_disabled(framework.enabled)
+                    harness.name,
+                    harness.display_name,
+                    enabled_disabled(harness.enabled)
                 )
             })
             .collect(),
-        CommandReport::FrameworkShow(framework) => {
+        CommandReport::HarnessShow(harness) => {
             let mut lines = vec![
-                format!("Id: {}", framework.id),
-                format!("Name: {}", framework.name),
-                format!("Display name: {}", framework.display_name),
-                format!("Enabled: {}", yes_no(framework.enabled)),
-                format!("Mappings: {}", framework.mappings.len()),
+                format!("Id: {}", harness.id),
+                format!("Name: {}", harness.name),
+                format!("Display name: {}", harness.display_name),
+                format!("Enabled: {}", yes_no(harness.enabled)),
+                format!("Mappings: {}", harness.mappings.len()),
             ];
             if verbose {
-                lines.push(format!("Built in: {}", yes_no(framework.built_in)));
+                lines.push(format!("Built in: {}", yes_no(harness.built_in)));
                 lines.push(format!(
                     "Enabled by default: {}",
-                    yes_no(framework.enabled_by_default)
+                    yes_no(harness.enabled_by_default)
                 ));
             }
-            for mapping in &framework.mappings {
+            for mapping in &harness.mappings {
                 lines.push(format_mapping(mapping));
             }
             lines
         }
-        CommandReport::FrameworkEnabled { name, enabled } => vec![format!(
-            "{} framework `{name}`",
+        CommandReport::HarnessEnabled { name, enabled } => vec![format!(
+            "{} harness `{name}`",
             if *enabled { "Enabled" } else { "Disabled" }
         )],
-        CommandReport::FrameworkMappingList(mappings) => {
+        CommandReport::HarnessMappingList(mappings) => {
             mappings.iter().map(format_mapping).collect()
         }
-        CommandReport::FrameworkMappingAdded(mapping) => {
-            vec![format!("Added framework mapping {}", mapping.id)]
+        CommandReport::HarnessMappingAdded(mapping) => {
+            vec![format!("Added harness mapping {}", mapping.id)]
         }
-        CommandReport::FrameworkMappingRemoved(mapping) => {
-            vec![format!("Removed framework mapping {}", mapping.id)]
+        CommandReport::HarnessMappingRemoved(mapping) => {
+            vec![format!("Removed harness mapping {}", mapping.id)]
         }
         CommandReport::LinkableAdded(item) => {
             let mut lines = vec![format!("Added {} `{}`", item.item_type, item.name)];
@@ -960,10 +961,10 @@ fn group_details(group: &crate::core::registry::Group) -> Vec<String> {
     lines
 }
 
-fn format_mapping(mapping: &crate::core::framework::StoredFrameworkMapping) -> String {
+fn format_mapping(mapping: &crate::core::harness::StoredHarnessMapping) -> String {
     format!(
         "{}\t{}\t{} -> {}\t{}{}",
-        mapping.framework_id,
+        mapping.harness_id,
         mapping.id,
         mapping.source_path.display(),
         mapping.link_path.display(),
@@ -1081,24 +1082,59 @@ struct JsonStatusEntry {
 #[cfg(test)]
 mod tests {
     use super::{
-        clean_command, link_command, parse_error_exit_code, unlink_command, write_report, Cli,
-        CliCleanArgs, CliLinkArgs, CliUnlinkArgs, OutputOptions,
+        clean_command, command_from_cli, link_command, parse_error_exit_code, unlink_command,
+        write_report, Cli, CliCleanArgs, CliLinkArgs, CliUnlinkArgs, OutputOptions,
     };
     use crate::{
-        commands::{CommandReport, LinkCommand, UnlinkTarget},
+        commands::{Command, CommandReport, LinkCommand, UnlinkTarget},
         core::{
             manifest::LinkRecord,
             project_links::{CleanMode, StatusEntry, StatusReport},
             symlink::{LinkKind, LinkStatus, SymlinkBackend},
         },
     };
-    use clap::Parser;
+    use clap::{error::ErrorKind, CommandFactory, Parser};
     use std::{path::PathBuf, process::ExitCode};
 
     #[test]
     fn help_exits_successfully() {
         let error = Cli::try_parse_from(["aglink", "--help"]).unwrap_err();
         assert_eq!(parse_error_exit_code(&error), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn harness_command_replaces_framework_in_parser_and_help() {
+        let subcommands: &[&[&str]] = &[
+            &["list"],
+            &["show", "claude"],
+            &["enable", "claude"],
+            &["disable", "claude"],
+            &["mapping", "list"],
+            &["mapping", "list", "claude"],
+            &[
+                "mapping",
+                "add",
+                "claude",
+                "AGENTS.md",
+                ".claude/extra.md",
+                "--kind",
+                "file",
+            ],
+            &["mapping", "remove", "claude", ".claude/extra.md"],
+        ];
+        for subcommand in subcommands {
+            let args = ["aglink", "harness"]
+                .into_iter()
+                .chain(subcommand.iter().copied());
+            let command = command_from_cli(Cli::try_parse_from(args).unwrap()).unwrap();
+            assert!(matches!(command, Command::Harness(_)));
+        }
+
+        let old_command = Cli::try_parse_from(["aglink", "framework", "list"]).unwrap_err();
+        assert_eq!(old_command.kind(), ErrorKind::InvalidSubcommand);
+        let help = Cli::command().render_help().to_string();
+        assert!(help.contains("harness"));
+        assert!(!help.contains("framework"));
     }
 
     #[test]
@@ -1210,7 +1246,7 @@ mod tests {
                     record: LinkRecord {
                         id: "id\"1".to_string(),
                         scope: "project".to_string(),
-                        framework_name: "registry".to_string(),
+                        harness_name: "registry".to_string(),
                         item_id: "item\\1".to_string(),
                         item_name: "writer\nskill".to_string(),
                         source_path: PathBuf::from("source\"path"),
