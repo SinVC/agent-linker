@@ -41,14 +41,15 @@ P0-2 的查询误选在 05 修复，数据库唯一性在 09 完成；P0-5 分�
 
 ## 统筹进度
 
-- 统筹聊天 ID：`01a18414-be15-7533-8e09-04f9b9971ffc`；自动跟进 ID：`agent-linker`，每 5 分钟唤醒统筹，已更新为仅收尾 01，完成后删除，不推进 02。
-- 调度与停止条件：用户最新指令“阶段1完成后暂停”按当前第 01 编号步骤执行；当前继续收尾 01，隔离候选构造、新验证与独立再验通过后由 `gpt-6.1 terra` 子代理本地提交，成功后暂停并删除自动跟进，不启动 02。执行与验收保持独立，后续证据写入对应下钻文档；此条件替换此前通过后继续下一编号步骤的安排。
-- 当前阶段：01；状态：原工作树代码独立验收 PASS 保持／B 方案隔离候选已构造，正在专属构建目录验证，候选独立再验待完成。01 尚未提交，本步新验收与本地提交成功后暂停，02 不启动。README 自本次更新后冻结，除真正验收结论或提交结果外不再更新，包括 cursor，避免改变候选 tree。
-- 执行会话：`01a18422-2ff4-7492-a3e3-3cfaa38030c9`（local，GPT-6.1 sol high）；候选保留 HEAD + 01 + 必要 receipt，已排除旧 readonly API 与调用、dbcheck、VACUUM 备份及安装根备份默认值；27 份计划来源文档按批准范围复制，不改当前工作树、index 或 HEAD；最后记录的 `wait_threads` cursor：`f198cc56-50e9-4387-864b-368588af54b9:23`。
-- 独立验收会话：`01a1842f-d52d-7763-ad7b-0c5c4f94621c`（local，GPT-6.1 sol high，已保存主工作树指纹，等待候选专属二进制复验及树与保全证据）；最后记录的 `wait_threads` cursor：`581af4d1-fade-4994-b457-c0dae9c3970d:9`。原工作树历史证据：独立 Windows `cargo test --locked -- --include-ignored --test-threads=1` 的 77 单测与 2 个 CLI 集成测试全部通过、0 ignored，`cargo fmt --check` 通过；真实隔离 CLI 对 `./assets` 与 `.` 的 dry-run 无副作用、Broker 建链、status 正确、unlink、源保全均 PASS。16 个本步文件的 baseline/frozen/current 指纹匹配，代码联合 SHA256：`c3da3eac027edb82a3ab892de1de046fecb3d68694cce839734573f6c28cd12f`；独立报告已写入 `01-paths.md`。最初默认模型 `gpt-5.5` 不支持而启动失败，切换 sol high 后复启成功，非代码失败。`gpt-6.1 terra` 提交子代理：`/root/commit_step01`，本地提交尚未完成。
-- 候选与提交要求：当前候选位于 `C:/Users/SinVC.Windy/.codex/visualizations/2026/10/28/01a18422-2ff4-7492-a3e3-3cfaa38030c9/b01/`，使用自己的构建目录验证。早期 terra 对照 patch 位于统筹可视化目录的 `step01-baseline-review/`；receipt-only 当时仅通过 apply check、未 build，full-overlap 仅供对照、禁止直接提交。当前候选必须重新验证，并交由原独立验收会话再次验收通过后才可由 terra 提交，不能沿用原工作树的旧 PASS。
-- 只读反思会话：`01a18444-3feb-7c12-a5c4-5eb149937665`（local，GPT-6.1 sol high）；最后记录的 cursor：`3c7369eb-4ff1-4700-9cd7-b2a22e6d3a5f:1`。按用户对多次失败与遗漏的反思要求，审查 B 范围泄漏、残留锁测试根因与最终 tree 交接，不并发 Broker、不修改实现；原独立验收会话仍是唯一最终 PASS 负责者。当前 B 新发现残留旧 baseline 写锁测试，已交执行修正，此项并非主工作树代码新回归。
-- 未解决问题：当前候选专属构建与独立再验、最终 tree 及工作树保全证据待完成。此前 01 增量应用到 HEAD 在模块 04 文档及 `db.rs`、`harness.rs`、`project_links.rs`、`registry.rs` 冲突，整文件提交会混入原有 Windows 安装路径与只读 DB 等基线改动，现通过隔离候选剥离无关改动。原工作树全部保留，HEAD 仍为 `369c5c9dcc01f14b6659ec43e0f8bd8646f3712b`，index 空，无提交、无 push，无用户决策事项。首次 FAIL 与验收返工第 1 轮历史保留——合法 Resource target-dir `.` 与 `./assets` 曾因父目录遍历的 `CurDir` 被拒绝，经最小修复、回归测试与独立真实 CLI 复核后通过。并行 Broker 曾一次报 `SERVICE_UNAVAILABLE`，仅作环境观察，串行全通过；macOS 由模拟覆盖，Linux 执行侧 77 单测与 2 个 CLI 测试日志已核对。
+- 统筹聊天 ID：`01a18414-be15-7533-8e09-04f9b9971ffc`；自动跟进 `agent-linker` 已由统筹删除，当前关闭。
+- 调度与停止条件：第 01 编号步骤实现、独立验收及本地实现提交均已完成，按用户要求暂停；02 未启动，不推进其他阶段。本次仅补 README 统筹结案记录，交由 terra 做仅此文件的本地文档提交，不修改已受验实现提交。
+- 当前阶段：01；原工作树实现与 B 隔离候选分别独立验收 PASS。本地实现提交：`476781bfbb6dfd7ac96edf978daef99f30f3f3c4`；父提交：`369c5c9dcc01f14b6659ec43e0f8bd8646f3712b`；实现 tree：`79f5c8a0c35ab522999ff3ca0dd99625e924fdaa`，42 个批准路径，与最终受验 tree 完全一致。
+- 执行会话：`01a18422-2ff4-7492-a3e3-3cfaa38030c9`；B 候选保留指定 HEAD + 01 + 必要 Receipt，排除旧 readonly API/调用、dbcheck、VACUUM 备份、安装根备份默认值及对应既有测试；27 份计划与直接来源文档按批准范围纳入。最终本地实现提交由指定 terra 子代理 `/root/commit_step01_final` 完成，无 push。
+- 独立验收会话：`01a1842f-d52d-7763-ad7b-0c5c4f94621c`；B 候选独立重新构建并通过 `cargo fmt --check`、完整 Windows 73 个单测及 2 个 CLI 集成测试（含 3 项真实 Broker 安全测试，0 failed、0 ignored）。候选专属二进制对 `.` 与 `./assets` 的 dry-run 无副作用、真实 symlink 创建、正确状态、解绑和 source 内容保全均通过。原工作树历史 77+2 PASS 与 B 新 PASS 分别记录，不互相替代。
+- 候选与证据保留：执行产物根 `C:/Users/SinVC.Windy/.codex/visualizations/2026/10/28/01a18422-2ff4-7492-a3e3-3cfaa38030c9/` 中的 `b01/`、`b01-candidate.json`、`b01-head-to-candidate.patch`、`b01-git/index` 及 `step01-baseline/` 保留；最终独立报告为验收产物根 `C:/Users/SinVC.Windy/.codex/visualizations/2026/10/28/01a1842f-d52d-7763-ad7b-0c5c4f94621c/b01-independent-acceptance.md`。B 全部 src/tests 联合 SHA256：`1bd699cc8170fada567610fbc54cbd7a2ad9cfe62b4f9e003f9e7aec71989f33`；独立从 HEAD 重放 patch 得到相同实现 tree。
+- 只读反思会话：`01a18444-3feb-7c12-a5c4-5eb149937665`，已完成。残留旧基线写锁测试已按范围排除；README、B 专属记录及 Git symlink 交接门槛均闭合。提交后独立只读元数据复核确认 commit/parent/tree 一致，`CLAUDE.md` 保持 mode `120000`、blob `93d17ee607e3086f248831776f9c6db0d3cc9cf3` 和原 target；index 与实现 HEAD 一致，无暂存修改。
+- 本步未解决阻塞：无。CurDir 回归及提交范围冲突已解决；Broker 并发曾一次 `SERVICE_UNAVAILABLE` 作为环境观察保留，串行专项通过，未宣称并发可用性已验证；真实 macOS 未执行，仅路径模拟覆盖，Linux 候选 73+2 日志已核对。后续步骤不因本记录启动。
+- 工作树保全：工作树并不干净；既有根/安装/发布文档、脚本、数据库相关源码等未提交基线继续保留。主工作树 `01-paths.md` 与已提交候选中的 B 记录仍有保留差异，显示为未暂存；未同步覆盖该文件或其他主文件。本 README 统筹区结案是明确授权例外，随后仅提交此文档变化，不混入这些既有改动。
 - 初始工作树基线（统筹记录前已有，不作为本次实现新增）：
   - 已修改根文档：`CLI_REFERENCE.md`、`README.md`、`RELEASE_CHECKLIST.md`。
   - 已修改设计文档：`dev-docs/architecture.md`、`dev-docs/modules/04-global-store-registry.md`、`dev-docs/release-distribution.md`。
