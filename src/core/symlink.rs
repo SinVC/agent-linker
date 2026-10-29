@@ -974,7 +974,10 @@ fn fs_targets_match(link: &Path, actual: &Path, expected: &Path) -> bool {
 
     let actual = resolve_relative_target(link, actual);
     match (actual.canonicalize(), expected.canonicalize()) {
-        (Ok(actual), Ok(expected)) => actual == expected,
+        (Ok(actual), Ok(expected)) => {
+            crate::core::paths::normalize_windows_path(&actual)
+                == crate::core::paths::normalize_windows_path(&expected)
+        }
         _ => false,
     }
 }

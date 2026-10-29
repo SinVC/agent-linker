@@ -11,7 +11,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::core::{
     db,
-    db::DbPathResolution,
     error::{Error, Result},
     harness,
     linkable::{
@@ -19,6 +18,10 @@ use crate::core::{
         validate_skill_source, LinkableItem, LinkableItemType,
     },
     manifest::{load_manifest, manifest_path, save_manifest, LinkRecord},
+    paths::{
+        self, current_project_root, managed_relative_path_key, normalize_windows_path,
+        resolve_managed_project_path, DbPathResolution,
+    },
     registry::RegistryStore,
     symlink::{
         default_provider, ensure_symlink, CreateSymlinkOptions, CreateSymlinkOutcome, LinkStatus,
@@ -151,9 +154,9 @@ pub fn link_current_project_with_options(
     request: LinkItemRequest,
     options: LinkOptions,
 ) -> Result<LinkItemReport> {
-    let project_root = std::env::current_dir()?;
+    let project_root = current_project_root()?;
     let mut provider = default_provider();
-    let resolution = db::resolve_database_path()?;
+    let resolution = paths::resolve_database_path()?;
     link_project_with_provider_and_db_with_options(
         &project_root,
         provider.as_mut(),
@@ -168,7 +171,7 @@ pub fn link_project_with_provider(
     provider: &mut dyn SymlinkProvider,
     request: LinkItemRequest,
 ) -> Result<LinkItemReport> {
-    let resolution = db::resolve_database_path()?;
+    let resolution = paths::resolve_database_path()?;
     link_project_with_provider_and_db(project_root, provider, &resolution, request)
 }
 
@@ -205,7 +208,6 @@ fn link_project_with_provider_and_store(
     request: LinkItemRequest,
     options: LinkOptions,
 ) -> Result<LinkItemReport> {
-    validate_project_root(project_root)?;
     let item = store.find_any_item(&request.identifier)?;
     link_project_item_with_provider(
         project_root,
@@ -231,15 +233,14 @@ fn link_project_item_with_provider(
     let created_dirs = prepare_link_parent(project_root, &link_path, !options.dry_run)?;
 
     let source_path = item.source_path.clone();
-    let absolute_link_path = project_root.join(&link_path);
+    let absolute_link_path = resolve_managed_project_path(project_root, &link_path)?;
     let mut manifest = load_manifest(project_root)?;
     let record_id = manifest_record_id(&item, &link_path);
 
-    if let Some(existing) = manifest
-        .links
-        .iter()
-        .find(|link| link.link_path == link_path && link.id != record_id)
-    {
+    if let Some(existing) = manifest.links.iter().find(|link| {
+        managed_relative_path_key(&link.link_path) == managed_relative_path_key(&link_path)
+            && link.id != record_id
+    }) {
         return Err(Error::manifest(format!(
             "project link path `{}` is already managed by `{}`",
             link_path.display(),
@@ -294,9 +295,9 @@ pub fn link_group_current_project_with_options(
     group: &str,
     options: LinkOptions,
 ) -> Result<LinkGroupReport> {
-    let project_root = std::env::current_dir()?;
+    let project_root = current_project_root()?;
     let mut provider = default_provider();
-    let resolution = db::resolve_database_path()?;
+    let resolution = paths::resolve_database_path()?;
     link_group_project_with_provider_and_db_with_options(
         &project_root,
         provider.as_mut(),
@@ -328,7 +329,6 @@ pub fn link_group_project_with_provider_and_db_with_options(
     group: &str,
     options: LinkOptions,
 ) -> Result<LinkGroupReport> {
-    validate_project_root(project_root)?;
     let store = RegistryStore::open(resolution)?;
     let group = store.show_group(group)?;
     let group_name = group.name;
@@ -354,7 +354,7 @@ pub fn link_group_project_with_provider_and_db_with_options(
 }
 
 pub fn status_current_project() -> Result<StatusReport> {
-    let project_root = std::env::current_dir()?;
+    let project_root = current_project_root()?;
     let provider = default_provider();
     status_project_with_provider(&project_root, provider.as_ref())
 }
@@ -363,13 +363,12 @@ pub fn status_project_with_provider(
     project_root: &Path,
     provider: &dyn SymlinkProvider,
 ) -> Result<StatusReport> {
-    validate_project_root(project_root)?;
     let manifest = load_manifest(project_root)?;
     let mut entries = Vec::new();
 
     for record in manifest.links {
-        let absolute_source_path = project_path(project_root, &record.source_path);
-        let absolute_link_path = project_root.join(&record.link_path);
+        let absolute_source_path = project_path(project_root, &record.source_path)?;
+        let absolute_link_path = resolve_managed_project_path(project_root, &record.link_path)?;
         let status =
             provider.link_status(&absolute_source_path, &absolute_link_path, record.link_kind)?;
         entries.push(StatusEntry {
@@ -395,7 +394,7 @@ pub fn unlink_current_project_with_options(
     identifier: Option<String>,
     options: UnlinkOptions,
 ) -> Result<UnlinkReport> {
-    let project_root = std::env::current_dir()?;
+    let project_root = current_project_root()?;
     let mut provider = default_provider();
     unlink_project_with_provider_with_options(&project_root, provider.as_mut(), identifier, options)
 }
@@ -419,7 +418,6 @@ pub fn unlink_project_with_provider_with_options(
     identifier: Option<String>,
     options: UnlinkOptions,
 ) -> Result<UnlinkReport> {
-    validate_project_root(project_root)?;
     let manifest = load_manifest(project_root)?;
     let selected_indexes = select_unlink_indexes(&manifest.links, identifier.as_deref())?;
     unlink_selected_indexes(project_root, provider, manifest, &selected_indexes, options)
@@ -433,9 +431,9 @@ pub fn unlink_group_current_project_with_options(
     group: &str,
     options: UnlinkOptions,
 ) -> Result<UnlinkReport> {
-    let project_root = std::env::current_dir()?;
+    let project_root = current_project_root()?;
     let mut provider = default_provider();
-    let resolution = db::resolve_database_path()?;
+    let resolution = paths::resolve_database_path()?;
     unlink_group_project_with_provider_and_db_with_options(
         &project_root,
         provider.as_mut(),
@@ -467,7 +465,6 @@ pub fn unlink_group_project_with_provider_and_db_with_options(
     group: &str,
     options: UnlinkOptions,
 ) -> Result<UnlinkReport> {
-    validate_project_root(project_root)?;
     let store = RegistryStore::open(resolution)?;
     let group = store.show_group(group)?;
     let manifest = load_manifest(project_root)?;
@@ -487,7 +484,7 @@ pub fn clean_current_project(mode: CleanMode) -> Result<CleanReport> {
 }
 
 pub fn clean_current_project_with_options(options: CleanOptions) -> Result<CleanReport> {
-    let project_root = std::env::current_dir()?;
+    let project_root = current_project_root()?;
     let mut provider = default_provider();
     clean_project_with_provider_with_options(&project_root, provider.as_mut(), options)
 }
@@ -505,14 +502,13 @@ pub fn clean_project_with_provider_with_options(
     provider: &mut dyn SymlinkProvider,
     options: CleanOptions,
 ) -> Result<CleanReport> {
-    validate_project_root(project_root)?;
     let mut manifest = load_manifest(project_root)?;
     let mut selected_indexes = BTreeSet::new();
     let mut drop_only_indexes = BTreeSet::new();
 
     for (index, record) in manifest.links.iter().enumerate() {
-        let absolute_source_path = project_path(project_root, &record.source_path);
-        let absolute_link_path = project_root.join(&record.link_path);
+        let absolute_source_path = project_path(project_root, &record.source_path)?;
+        let absolute_link_path = resolve_managed_project_path(project_root, &record.link_path)?;
         let status =
             provider.link_status(&absolute_source_path, &absolute_link_path, record.link_kind)?;
         let source_missing = if matches!(options.mode, CleanMode::MissingSource) {
@@ -551,7 +547,7 @@ pub fn clean_project_with_provider_with_options(
     let links = std::mem::take(&mut manifest.links);
     for (index, record) in links.into_iter().enumerate() {
         if selected_indexes.contains(&index) {
-            let absolute_link_path = project_root.join(&record.link_path);
+            let absolute_link_path = resolve_managed_project_path(project_root, &record.link_path)?;
             let outcome = if options.dry_run {
                 planned_remove_outcome(project_root, provider, &record)?
             } else {
@@ -584,8 +580,21 @@ pub fn clean_project_with_provider_with_options(
 }
 
 pub fn doctor_current_project(verbose: bool) -> DoctorReport {
-    let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let resolution = match db::resolve_database_path() {
+    let project_root = match current_project_root() {
+        Ok(root) => root,
+        Err(error) => {
+            return DoctorReport {
+                checks: vec![DoctorCheck {
+                    name: "project-root".to_string(),
+                    ok: false,
+                    summary: error.to_string(),
+                    details: Vec::new(),
+                }],
+                ok: false,
+            }
+        }
+    };
+    let resolution = match paths::resolve_database_path() {
         Ok(resolution) => resolution,
         Err(error) => {
             return DoctorReport {
@@ -815,7 +824,7 @@ fn unlink_selected_indexes(
     let links = std::mem::take(&mut manifest.links);
     for (index, record) in links.into_iter().enumerate() {
         if selected_indexes.contains(&index) {
-            let absolute_link_path = project_root.join(&record.link_path);
+            let absolute_link_path = resolve_managed_project_path(project_root, &record.link_path)?;
             let outcome = if options.dry_run {
                 planned_remove_outcome(project_root, provider, &record)?
             } else {
@@ -852,8 +861,8 @@ fn preflight_unlink(
 ) -> Result<()> {
     for index in selected_indexes {
         let record = &records[*index];
-        let absolute_source_path = project_path(project_root, &record.source_path);
-        let absolute_link_path = project_root.join(&record.link_path);
+        let absolute_source_path = project_path(project_root, &record.source_path)?;
+        let absolute_link_path = resolve_managed_project_path(project_root, &record.link_path)?;
         match provider.link_status(&absolute_source_path, &absolute_link_path, record.link_kind)? {
             LinkStatus::ExistingRealFile => {
                 return Err(SymlinkError::new(
@@ -898,8 +907,8 @@ fn planned_remove_outcome(
     provider: &dyn SymlinkProvider,
     record: &LinkRecord,
 ) -> Result<RemoveSymlinkOutcome> {
-    let absolute_source_path = project_path(project_root, &record.source_path);
-    let absolute_link_path = project_root.join(&record.link_path);
+    let absolute_source_path = project_path(project_root, &record.source_path)?;
+    let absolute_link_path = resolve_managed_project_path(project_root, &record.link_path)?;
     match provider.link_status(&absolute_source_path, &absolute_link_path, record.link_kind)? {
         LinkStatus::Missing => Ok(RemoveSymlinkOutcome::Missing),
         LinkStatus::CorrectSymlink { .. }
@@ -1056,16 +1065,7 @@ fn prepare_link_parent(
     relative_link_path: &Path,
     create: bool,
 ) -> Result<Vec<PathBuf>> {
-    if relative_link_path.is_absolute()
-        || relative_link_path
-            .components()
-            .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        return Err(Error::invalid_arguments(format!(
-            "link path must stay inside the project: {}",
-            relative_link_path.display()
-        )));
-    }
+    resolve_managed_project_path(project_root, relative_link_path)?;
 
     let Some(parent) = relative_link_path
         .parent()
@@ -1075,25 +1075,15 @@ fn prepare_link_parent(
     };
 
     let mut created_dirs = Vec::new();
-    let mut current = project_root.to_path_buf();
     let mut current_relative = PathBuf::new();
-    for component in parent.components() {
-        current.push(component.as_os_str());
+    for component in parent
+        .components()
+        .filter(|component| *component != std::path::Component::CurDir)
+    {
         current_relative.push(component.as_os_str());
+        let current = resolve_managed_project_path(project_root, &current_relative)?;
         match fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(Error::project(format!(
-                    "link parent must be a real directory, not a symlink: {}",
-                    current.display()
-                )));
-            }
-            Ok(metadata) if metadata.is_dir() => {}
-            Ok(_) => {
-                return Err(Error::project(format!(
-                    "link parent path exists but is not a directory: {}",
-                    current.display()
-                )));
-            }
+            Ok(_) => {} // Already checked as a parent of the full link path above.
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 created_dirs.push(current_relative.clone());
                 if create {
@@ -1185,23 +1175,11 @@ fn select_unlink_indexes(
     }
 }
 
-fn project_path(project_root: &Path, path: &Path) -> PathBuf {
+fn project_path(project_root: &Path, path: &Path) -> Result<PathBuf> {
     if path.is_absolute() {
-        path.to_path_buf()
+        Ok(normalize_windows_path(path))
     } else {
-        project_root.join(path)
-    }
-}
-
-fn validate_project_root(project_root: &Path) -> Result<()> {
-    let metadata = fs::metadata(project_root)?;
-    if metadata.is_dir() {
-        Ok(())
-    } else {
-        Err(Error::project(format!(
-            "project root is not a directory: {}",
-            project_root.display()
-        )))
+        resolve_managed_project_path(project_root, path)
     }
 }
 
@@ -1215,9 +1193,10 @@ mod tests {
         LinkItemRequest, LinkOptions, UnlinkOptions,
     };
     use crate::core::{
-        db::{migrate_database, DbPathReason, DbPathResolution},
+        db::migrate_database,
         linkable::LinkableItemType,
         manifest::load_manifest,
+        paths::{DbPathReason, DbPathResolution},
         registry::{add_group_items, add_item, create_group, AddLinkableItem},
         symlink::{CreateSymlinkOutcome, LinkKind, LinkStatus, MockEntry, MockSymlinkProvider},
         test_support::TestDir,
@@ -1236,6 +1215,143 @@ mod tests {
         resolution
     }
 
+    #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "requires running WinSymlinksBroker; run cargo test --locked -- --ignored --test-threads=1"
+    )]
+    fn symlink_parent_escape_is_rejected_by_every_project_operation() {
+        for hijacked in [".agents", "controlled", "relative-source"] {
+            let project = TestDir::new("project-escape");
+            let outside = TestDir::new("outside-escape");
+            let data = TestDir::new("escape-db");
+            let resolution = database(&data);
+            let source = outside.path().join("source.txt");
+            fs::write(&source, "external source").unwrap();
+            let item = add_item(
+                &resolution,
+                AddLinkableItem {
+                    name: "asset".to_string(),
+                    alias: None,
+                    item_type: LinkableItemType::Resource,
+                    source_path: source,
+                    default_target_dir: Some(PathBuf::from("controlled")),
+                    description: None,
+                },
+            )
+            .unwrap();
+            let relative_link = Path::new("controlled/asset");
+            let mut record = super::link_record_from_item(
+                &item,
+                relative_link,
+                crate::core::symlink::SymlinkBackend::Mock,
+                "test:asset",
+            );
+            if hijacked == "relative-source" {
+                record.source_path = PathBuf::from("relative-source/source.txt");
+            }
+            let manifest = crate::core::manifest::Manifest {
+                schema_version: 1,
+                links: vec![record],
+            };
+            crate::core::manifest::save_manifest(project.path(), &manifest).unwrap();
+            let original = fs::read(project.path().join(".agents/links.toml")).unwrap();
+            fs::write(outside.path().join("links.toml"), &original).unwrap();
+            fs::write(outside.path().join("asset"), "external leaf").unwrap();
+            if hijacked == ".agents" {
+                fs::rename(
+                    project.path().join(".agents"),
+                    project.path().join(".agents-original"),
+                )
+                .unwrap();
+            }
+            crate::core::test_support::directory_symlink(
+                outside.path(),
+                &project.path().join(hijacked),
+            );
+            let mut provider = MockSymlinkProvider::new();
+            provider.add_dir(project.path());
+            provider.add_dir(project.path().join("controlled"));
+            provider.add_file(&item.source_path);
+            let absolute_link = project.path().join(relative_link);
+            provider.add_symlink(&absolute_link, &item.source_path, LinkKind::File);
+            let original_entry = provider.entry(&absolute_link).cloned();
+            assert!(
+                crate::core::manifest::load_manifest(project.path()).is_err(),
+                "load: {hijacked}"
+            );
+            assert!(
+                crate::core::manifest::save_manifest(project.path(), &manifest).is_err(),
+                "save: {hijacked}"
+            );
+            assert!(
+                status_project_with_provider(project.path(), &provider).is_err(),
+                "status: {hijacked}"
+            );
+            assert!(
+                link_project_with_provider_and_db(
+                    project.path(),
+                    &mut provider,
+                    &resolution,
+                    LinkItemRequest {
+                        identifier: "asset".to_string(),
+                        link_name_override: None,
+                        target_dir_override: None,
+                    }
+                )
+                .is_err(),
+                "link: {hijacked}"
+            );
+            assert!(
+                unlink_project_with_provider(project.path(), &mut provider, None).is_err(),
+                "unlink: {hijacked}"
+            );
+            assert!(
+                clean_project_with_provider(project.path(), &mut provider, CleanMode::Default)
+                    .is_err(),
+                "clean: {hijacked}"
+            );
+            assert_eq!(provider.entry(&absolute_link), original_entry.as_ref());
+            assert_eq!(
+                fs::read(outside.path().join("links.toml")).unwrap(),
+                original
+            );
+            assert_eq!(
+                fs::read_to_string(outside.path().join("asset")).unwrap(),
+                "external leaf"
+            );
+            assert_eq!(
+                fs::read_to_string(outside.path().join("source.txt")).unwrap(),
+                "external source"
+            );
+        }
+
+        // The manifest leaf is a real-file control boundary, unlike managed link leaves.
+        let project = TestDir::new("manifest-leaf-symlink");
+        let outside = TestDir::new("outside-manifest-leaf");
+        fs::create_dir(project.path().join(".agents")).unwrap();
+        let external_manifest = outside.path().join("links.toml");
+        fs::write(&external_manifest, "schema_version = 1\n").unwrap();
+        let mut filesystem_provider = crate::core::symlink::default_provider();
+        filesystem_provider
+            .create_symlink(
+                &external_manifest,
+                &project.path().join(".agents/links.toml"),
+                LinkKind::File,
+            )
+            .unwrap();
+        assert!(crate::core::manifest::load_manifest(project.path()).is_err());
+        assert!(crate::core::manifest::save_manifest(
+            project.path(),
+            &crate::core::manifest::Manifest::empty()
+        )
+        .is_err());
+        assert_eq!(
+            fs::read_to_string(&external_manifest).unwrap(),
+            "schema_version = 1\n"
+        );
+    }
+
     fn seed_skill_source(project: &TestDir) -> PathBuf {
         let source = project.path().join("writer-skill");
         fs::create_dir(&source).unwrap();
@@ -1248,7 +1364,7 @@ mod tests {
         provider.add_dir(project_root);
         provider.add_dir(project_root.join(".agents"));
         provider.add_dir(project_root.join(".agents").join("skills"));
-        provider.add_dir(fs::canonicalize(source).unwrap());
+        provider.add_dir(crate::core::test_support::canonical_path(source));
         provider
     }
 
@@ -1295,7 +1411,7 @@ mod tests {
                     .join("writer")
             ),
             Some(&MockEntry::Symlink {
-                target: fs::canonicalize(&source).unwrap(),
+                target: crate::core::test_support::canonical_path(&source),
                 kind: LinkKind::Directory
             })
         );
@@ -1403,14 +1519,14 @@ mod tests {
         .unwrap();
 
         let mut provider = seed_provider(temp_dir.path(), &source);
-        provider.add_dir(fs::canonicalize(&other).unwrap());
+        provider.add_dir(crate::core::test_support::canonical_path(&other));
         provider.add_symlink(
             temp_dir
                 .path()
                 .join(".agents")
                 .join("skills")
                 .join("writer"),
-            fs::canonicalize(&other).unwrap(),
+            crate::core::test_support::canonical_path(&other),
             LinkKind::Directory,
         );
 
@@ -1453,7 +1569,7 @@ mod tests {
                     .join("writer")
             ),
             Some(&MockEntry::Symlink {
-                target: fs::canonicalize(&source).unwrap(),
+                target: crate::core::test_support::canonical_path(&source),
                 kind: LinkKind::Directory
             })
         );
@@ -1481,7 +1597,7 @@ mod tests {
         let mut provider = MockSymlinkProvider::new();
         provider.add_dir(temp_dir.path());
         provider.add_dir(temp_dir.path().join("docs"));
-        provider.add_file(fs::canonicalize(&source).unwrap());
+        provider.add_file(crate::core::test_support::canonical_path(&source));
 
         let report = link_project_with_provider_and_db(
             temp_dir.path(),
@@ -1549,7 +1665,7 @@ mod tests {
 
         let mut provider = seed_provider(temp_dir.path(), &skill_source);
         provider.add_dir(temp_dir.path().join("docs"));
-        provider.add_file(fs::canonicalize(&resource_source).unwrap());
+        provider.add_file(crate::core::test_support::canonical_path(&resource_source));
 
         let link_report = link_group_project_with_provider_and_db(
             temp_dir.path(),
@@ -1720,7 +1836,7 @@ mod tests {
                 .join(".agents")
                 .join("skills")
                 .join("writer"),
-            fs::canonicalize(&source).unwrap(),
+            crate::core::test_support::canonical_path(&source),
             LinkKind::Directory,
         );
         clean_provider.add_symlink(
@@ -1756,7 +1872,7 @@ mod tests {
         fs::create_dir(temp_dir.path().join(".agents")).unwrap();
         fs::create_dir(temp_dir.path().join(".agents").join("skills")).unwrap();
         let source = seed_skill_source(&temp_dir);
-        let canonical_source = fs::canonicalize(&source).unwrap();
+        let canonical_source = crate::core::test_support::canonical_path(&source);
         let resolution = database(&temp_dir);
         add_item(
             &resolution,

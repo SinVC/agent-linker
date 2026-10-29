@@ -5,6 +5,16 @@ use std::{
 
 use crate::core::util::timestamp_nanos;
 
+pub fn canonical_path(path: &Path) -> PathBuf {
+    crate::core::paths::normalize_windows_path(&fs::canonicalize(path).unwrap())
+}
+
+pub fn directory_symlink(source: &Path, link: &Path) {
+    crate::core::symlink::default_provider()
+        .create_symlink(source, link, crate::core::symlink::LinkKind::Directory)
+        .unwrap();
+}
+
 pub struct TestDir {
     path: PathBuf,
 }

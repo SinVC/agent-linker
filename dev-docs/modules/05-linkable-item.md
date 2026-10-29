@@ -16,8 +16,9 @@
 
 - Registry 存储在全局 SQLite。
 - MVP 采用分散管理模式。
-- `source_path` 永远记录绝对路径。
-- 项目 manifest 中的 `link_path` 使用相对项目根目录的路径。
+- `source_path` 永远记录绝对路径，可位于项目外。注册时 canonicalize 后经 `core::paths` 统一规范化 Windows 普通短磁盘路径，存储、展示和比较使用同一形式。
+- 项目 Manifest 内的相对 source 经受控项目路径入口解析；不允许通过 symlink 父目录逃逸。
+- 项目 manifest 中的 `link_path` 使用非空项目相对路径，拒绝绝对根、盘符前缀及 `..` 组件；解析与祖先检查统一通过 `core::paths`，已有父目录不可为 symlink。
 - MVP 阶段 symlink 目标使用绝对 source path。
 
 ## 接口契约

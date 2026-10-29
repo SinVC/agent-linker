@@ -1,14 +1,12 @@
 use std::path::{Path, PathBuf};
 
 use crate::core::{
-    db::{
-        self, ConfigEntry, ConfigUnsetReport, DbBackupReport, DbCheckReport, DbPathResolution,
-        MigrationReport,
-    },
+    db::{self, ConfigEntry, ConfigUnsetReport, DbBackupReport, DbCheckReport, MigrationReport},
     error::{Error, Result},
     harness::{self, AddHarnessMapping, StoredHarness, StoredHarnessMapping},
     linkable::{LinkableItem, LinkableItemType},
     manifest::{init_current_project, InitProjectReport},
+    paths::{self, DbPathResolution},
     project_links::{
         clean_current_project_with_options, doctor_current_project,
         link_current_project_with_options, link_group_current_project_with_options,
@@ -265,7 +263,7 @@ pub fn run(command: Command) -> Result<CommandReport> {
 }
 
 fn run_config(command: ConfigCommand) -> Result<CommandReport> {
-    let resolution = db::resolve_database_path()?;
+    let resolution = paths::resolve_database_path()?;
     match command {
         ConfigCommand::Path => Ok(CommandReport::ConfigPath(resolution)),
         ConfigCommand::List => Ok(CommandReport::ConfigList(db::list_config(&resolution)?)),
@@ -287,7 +285,7 @@ fn run_config(command: ConfigCommand) -> Result<CommandReport> {
 
 fn run_db(command: DbCommand) -> Result<CommandReport> {
     match command {
-        DbCommand::Path => Ok(CommandReport::DbPath(db::resolve_database_path()?)),
+        DbCommand::Path => Ok(CommandReport::DbPath(paths::resolve_database_path()?)),
         DbCommand::Migrate => Ok(CommandReport::DbMigrate(db::migrate_default_database()?)),
         DbCommand::Backup { path } => Ok(CommandReport::DbBackup(db::backup_default_database(
             path.as_deref(),
@@ -297,7 +295,7 @@ fn run_db(command: DbCommand) -> Result<CommandReport> {
 }
 
 fn run_harness(command: HarnessCommand) -> Result<CommandReport> {
-    let resolution = db::resolve_database_path()?;
+    let resolution = paths::resolve_database_path()?;
     match command {
         HarnessCommand::List => Ok(CommandReport::HarnessList(harness::list_harnesses(
             &resolution,
@@ -349,7 +347,7 @@ fn run_harness(command: HarnessCommand) -> Result<CommandReport> {
 }
 
 fn run_linkable(command: LinkableCommand, item_type: LinkableItemType) -> Result<CommandReport> {
-    let resolution = db::resolve_database_path()?;
+    let resolution = paths::resolve_database_path()?;
     match command {
         LinkableCommand::Add {
             path,
@@ -396,7 +394,7 @@ fn run_linkable(command: LinkableCommand, item_type: LinkableItemType) -> Result
 }
 
 fn run_group(command: GroupCommand) -> Result<CommandReport> {
-    let resolution = db::resolve_database_path()?;
+    let resolution = paths::resolve_database_path()?;
     match command {
         GroupCommand::Create { name } => Ok(CommandReport::GroupCreated(registry::create_group(
             &resolution,

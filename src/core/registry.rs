@@ -8,7 +8,7 @@ use std::{
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::core::{
-    db::{open_migrated_connection, DbPathResolution},
+    db::open_migrated_connection,
     error::{Error, Result},
     linkable::{
         parse_item_type, parse_link_kind, parse_source_ownership, parse_source_type,
@@ -16,6 +16,7 @@ use crate::core::{
         validate_resource_source, validate_skill_source, LinkableItem, LinkableItemType,
         SourceOwnership, SourceType,
     },
+    paths::{normalize_windows_path, DbPathResolution},
     util::{timestamp, timestamp_nanos},
 };
 
@@ -605,7 +606,7 @@ fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LinkableItem> {
         item_type,
         name: row.get(2)?,
         alias: row.get(3)?,
-        source_path: PathBuf::from(row.get::<_, String>(4)?),
+        source_path: normalize_windows_path(Path::new(&row.get::<_, String>(4)?)),
         source_kind,
         default_target_dir: row.get::<_, Option<String>>(6)?.map(PathBuf::from),
         description: row.get(7)?,
@@ -745,9 +746,12 @@ mod tests {
         remove_group_items, remove_item, rename_group, rename_item, show_group, show_item,
         AddLinkableItem, LinkableItemType,
     };
-    use crate::core::db::{migrate_database, DbPathReason, DbPathResolution};
     use crate::core::symlink::LinkKind;
     use crate::core::test_support::TestDir;
+    use crate::core::{
+        db::migrate_database,
+        paths::{DbPathReason, DbPathResolution},
+    };
     #[cfg(unix)]
     use std::{ffi::OsString, os::unix::ffi::OsStringExt};
     use std::{
@@ -1056,7 +1060,7 @@ mod tests {
             show_item(&resolution, LinkableItemType::Skill, "stored")
                 .unwrap()
                 .source_path,
-            fs::canonicalize(&source).unwrap()
+            crate::core::test_support::canonical_path(&source)
         );
 
         let removed = remove_item(&resolution, LinkableItemType::Skill, "stored").unwrap();

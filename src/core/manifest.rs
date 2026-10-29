@@ -10,6 +10,9 @@ use std::{
 use crate::core::{
     error::{Error, Result},
     harness::{default_init_mappings, HarnessMapping},
+    paths::{
+        managed_relative_path_key, resolve_managed_project_path, validate_managed_relative_path,
+    },
     symlink::{
         default_provider, ensure_symlink, CreateSymlinkOptions, CreateSymlinkOutcome, LinkKind,
         SymlinkBackend, SymlinkProvider,
@@ -63,6 +66,7 @@ impl Manifest {
         }
 
         let mut seen_ids = BTreeSet::new();
+        let mut seen_paths = BTreeSet::new();
         for link in &self.links {
             require_non_empty("id", &link.id)?;
             require_non_empty("scope", &link.scope)?;
@@ -80,10 +84,14 @@ impl Manifest {
                 )));
             }
 
-            if link.link_path.as_os_str().is_empty() {
+            validate_managed_relative_path(&link.link_path).map_err(|error| {
+                Error::manifest(format!("manifest link `{}`: {error}", link.id))
+            })?;
+            let key = managed_relative_path_key(&link.link_path);
+            if !seen_paths.insert(key) {
                 return Err(Error::manifest(format!(
-                    "manifest link `{}` has empty link_path",
-                    link.id
+                    "manifest contains duplicate link_path `{}`",
+                    link.link_path.display()
                 )));
             }
 
@@ -138,8 +146,6 @@ pub fn init_project_with_provider(
     project_root: &Path,
     provider: &mut dyn SymlinkProvider,
 ) -> Result<InitProjectReport> {
-    validate_project_root(project_root)?;
-
     let mut report = InitProjectReport {
         project_root: project_root.to_path_buf(),
         manifest_path: manifest_path(project_root),
@@ -163,8 +169,8 @@ pub fn init_project_with_provider(
     update_gitignore(project_root, &mut report)?;
 
     for mapping in default_init_mappings() {
-        let source = mapping.source_in(project_root);
-        let link = mapping.link_in(project_root);
+        let source = mapping.source_in(project_root)?;
+        let link = mapping.link_in(project_root)?;
         let outcome = ensure_symlink(
             provider,
             &source,
@@ -194,7 +200,7 @@ pub fn manifest_path(project_root: &Path) -> PathBuf {
 }
 
 pub fn load_manifest(project_root: &Path) -> Result<Manifest> {
-    let path = manifest_path(project_root);
+    let path = resolve_managed_project_path(project_root, Path::new(MANIFEST_PATH))?;
     let metadata = match fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -210,32 +216,45 @@ pub fn load_manifest(project_root: &Path) -> Result<Manifest> {
         )));
     }
 
-    parse_manifest(&fs::read_to_string(&path)?)
+    let manifest = parse_manifest(&fs::read_to_string(&path)?)?;
+    validate_project_paths(project_root, &manifest)?;
+    Ok(manifest)
 }
 
 pub fn save_manifest(project_root: &Path, manifest: &Manifest) -> Result<()> {
     manifest.validate()?;
+    validate_project_paths(project_root, manifest)?;
 
-    let path = manifest_path(project_root);
+    let path = resolve_managed_project_path(project_root, Path::new(MANIFEST_PATH))?;
     let Some(parent) = path.parent() else {
         return Err(Error::manifest("manifest path has no parent"));
     };
 
+    // The manifest leaf must never redirect a write through a symlink.
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            return Err(Error::manifest(format!(
+                "manifest path must be a real file: {}",
+                path.display()
+            )));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
     fs::create_dir_all(parent)?;
     fs::write(path, serialize_manifest(manifest))?;
     Ok(())
 }
 
-fn validate_project_root(project_root: &Path) -> Result<()> {
-    let metadata = fs::metadata(project_root)?;
-    if metadata.is_dir() {
-        Ok(())
-    } else {
-        Err(Error::project(format!(
-            "project root is not a directory: {}",
-            project_root.display()
-        )))
+fn validate_project_paths(project_root: &Path, manifest: &Manifest) -> Result<()> {
+    for record in &manifest.links {
+        resolve_managed_project_path(project_root, &record.link_path)?;
+        if !record.source_path.is_absolute() {
+            resolve_managed_project_path(project_root, &record.source_path)?;
+        }
     }
+    Ok(())
 }
 
 fn ensure_harness_parent_dirs(
@@ -264,7 +283,7 @@ fn ensure_real_file(
     relative_path: &Path,
     report: &mut InitProjectReport,
 ) -> Result<()> {
-    let path = project_root.join(relative_path);
+    let path = resolve_managed_project_path(project_root, relative_path)?;
     match fs::symlink_metadata(&path) {
         Ok(metadata) if metadata.file_type().is_symlink() => Err(Error::project(format!(
             "{} must be a real file, not a symlink",
@@ -299,7 +318,7 @@ fn ensure_real_dir(
     relative_path: &Path,
     report: &mut InitProjectReport,
 ) -> Result<()> {
-    let path = project_root.join(relative_path);
+    let path = resolve_managed_project_path(project_root, relative_path)?;
     match fs::symlink_metadata(&path) {
         Ok(metadata) if metadata.file_type().is_symlink() => Err(Error::project(format!(
             "{} must be a real directory, not a symlink",
@@ -327,7 +346,7 @@ fn ensure_real_dir(
 }
 
 fn update_gitignore(project_root: &Path, report: &mut InitProjectReport) -> Result<()> {
-    let path = project_root.join(".gitignore");
+    let path = resolve_managed_project_path(project_root, Path::new(".gitignore"))?;
     let block = managed_gitignore_block();
 
     match fs::symlink_metadata(&path) {
@@ -688,6 +707,77 @@ mod tests {
         provider.add_dir(project_root.join(".agents").join("skills"));
         provider.add_dir(project_root.join(".claude"));
         provider
+    }
+
+    #[test]
+    fn temporary_manifests_reject_unsafe_and_duplicate_link_paths() {
+        let project = TestDir::new("manifest-path-validation");
+        let record = super::record_from_mapping(
+            &crate::core::harness::default_init_mappings()[0],
+            crate::core::symlink::SymlinkBackend::Mock,
+        );
+        fs::create_dir(project.path().join(".agents")).unwrap();
+        let disk_path = super::manifest_path(project.path());
+        for path in [
+            "",
+            "/outside",
+            "C:outside",
+            "C:/outside",
+            r"C:\outside",
+            "../outside",
+            "safe/../outside",
+        ] {
+            let mut record = record.clone();
+            record.link_path = PathBuf::from(path);
+            let manifest = Manifest {
+                schema_version: 1,
+                links: vec![record],
+            };
+            fs::write(&disk_path, serialize_manifest(&manifest)).unwrap();
+            assert!(load_manifest(project.path()).is_err(), "{path}");
+            let original = fs::read(&disk_path).unwrap();
+            assert!(save_manifest(project.path(), &manifest).is_err(), "{path}");
+            assert_eq!(fs::read(&disk_path).unwrap(), original);
+        }
+        let mut duplicate = record.clone();
+        duplicate.id.push_str(":duplicate");
+        for path in ["CLAUDE.md", "./CLAUDE.md"] {
+            duplicate.link_path = PathBuf::from(path);
+            assert!(Manifest {
+                schema_version: 1,
+                links: vec![record.clone(), duplicate.clone()]
+            }
+            .validate()
+            .is_err());
+        }
+        #[cfg(windows)]
+        {
+            duplicate.link_path = PathBuf::from("claude.MD");
+            assert!(Manifest {
+                schema_version: 1,
+                links: vec![record, duplicate]
+            }
+            .validate()
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn init_uses_the_given_directory_even_when_a_parent_project_exists() {
+        let project = TestDir::new("init-current-only");
+        let mut outer_provider = seeded_provider(project.path());
+        init_project_with_provider(project.path(), &mut outer_provider).unwrap();
+        let original = fs::read(super::manifest_path(project.path())).unwrap();
+        let child = project.path().join("child");
+        fs::create_dir(&child).unwrap();
+        let mut child_provider = seeded_provider(&child);
+        let report = init_project_with_provider(&child, &mut child_provider).unwrap();
+        assert_eq!(report.project_root, child);
+        assert!(super::manifest_path(&child).is_file());
+        assert_eq!(
+            fs::read(super::manifest_path(project.path())).unwrap(),
+            original
+        );
     }
 
     #[test]

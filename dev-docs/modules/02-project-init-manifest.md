@@ -61,13 +61,16 @@ manifest 至少记录：
 - manifest 只记录 `aglink` 创建或接管管理的 symlink。
 - manifest 支持 `status`、`unlink`、`clean`、审计和恢复。
 - manifest 已存在且合法时合并或更新；损坏时失败且不覆盖。
+- Manifest 的 `link_path` 必须是非空项目相对路径，不含绝对根、盘符前缀或 `..` 组件；规范化相对路径后保持唯一，Windows 按大小写无关判重。
+- 创建、读取、状态检查、解绑、清理及 Manifest 读写统一通过 `core::paths` 解析受控路径；逐级检查已有父目录为真实目录，`.agents` 也必须为真实目录。链接末级允许为 symlink，Manifest 本体必须为真实文件。
+- Manifest 加载和保存同时验证记录中链接路径、项目相对 source 的祖先边界；绝对 source 可以位于项目外。路径解析本身不创建目录。
 - `.gitignore` 由 managed block 管理，不覆盖用户手写内容。
 - MVP 默认 ignore patterns 为 `.claude/`、`.agents/skills/`、`.agents/links.toml`。
 
 ## 冲突规则
 
 - `AGENTS.md` 不存在时创建空文件；存在真实文件时保留；存在目录或 symlink 时报错。
-- `.agents/` 不存在时创建；存在目录时保留；存在非目录时报错。
+- `.agents/` 不存在时创建；存在真实目录时保留；存在 symlink 或非目录时报错。
 - `.agents/skills/` 不存在时创建真实目录；存在目录时保留；存在非目录时报错。
 - Harness 兼容 link 不存在时创建；已是正确 symlink 时成功；错误 symlink、真实文件或真实目录时报错。
 

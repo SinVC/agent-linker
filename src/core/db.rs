@@ -2,7 +2,7 @@
 //! Legacy `framework*` table and column names are retained; harness is the domain term.
 
 use std::{
-    env, fs,
+    fs,
     path::{Path, PathBuf},
 };
 
@@ -10,72 +10,12 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 
 use crate::core::{
     error::{Error, Result},
+    paths::{resolve_database_path, DbPathReason, DbPathResolution},
     symlink::LinkKind,
     util::{bool_to_i64, timestamp, timestamp_nanos},
 };
 
-const DB_FILE_NAME: &str = "agent-linker.db";
-const DATA_DIR_NAME: &str = "agent-linker";
 const LATEST_SCHEMA_VERSION: u32 = 2;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DbPathReason {
-    ExplicitDataDirEnv,
-    PortableDatabase,
-    PlatformDefault,
-}
-
-impl DbPathReason {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            DbPathReason::ExplicitDataDirEnv => "AGLINK_DATA_DIR",
-            DbPathReason::PortableDatabase => "portable release agent-linker.db next to executable",
-            DbPathReason::PlatformDefault => "platform default",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DbPathResolution {
-    pub path: PathBuf,
-    pub reason: DbPathReason,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TargetPlatform {
-    Windows,
-    Macos,
-    Linux,
-}
-
-#[derive(Debug, Clone)]
-pub struct DbPathContext {
-    pub aglink_data_dir: Option<PathBuf>,
-    pub executable_path: Option<PathBuf>,
-    pub local_appdata: Option<PathBuf>,
-    pub home: Option<PathBuf>,
-    pub xdg_data_home: Option<PathBuf>,
-    pub platform: TargetPlatform,
-}
-
-impl DbPathContext {
-    pub fn from_environment() -> Self {
-        Self {
-            aglink_data_dir: env::var_os("AGLINK_DATA_DIR")
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from),
-            executable_path: env::current_exe().ok(),
-            local_appdata: env::var_os("LOCALAPPDATA")
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from),
-            home: home_from_environment(),
-            xdg_data_home: env::var_os("XDG_DATA_HOME")
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from),
-            platform: current_platform(),
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationReport {
@@ -125,36 +65,6 @@ impl DbCheckReport {
             && self.harness_count.unwrap_or(0) > 0
             && self.mapping_count.unwrap_or(0) > 0
     }
-}
-
-pub fn resolve_database_path() -> Result<DbPathResolution> {
-    resolve_database_path_with(&DbPathContext::from_environment())
-}
-
-pub fn resolve_database_path_with(context: &DbPathContext) -> Result<DbPathResolution> {
-    if let Some(path) = &context.aglink_data_dir {
-        return Ok(DbPathResolution {
-            path: path.join(DB_FILE_NAME),
-            reason: DbPathReason::ExplicitDataDirEnv,
-        });
-    }
-
-    if let Some(executable_path) = &context.executable_path {
-        if let Some(parent) = executable_path.parent() {
-            let portable_path = parent.join(DB_FILE_NAME);
-            if portable_path.is_file() {
-                return Ok(DbPathResolution {
-                    path: portable_path,
-                    reason: DbPathReason::PortableDatabase,
-                });
-            }
-        }
-    }
-
-    Ok(DbPathResolution {
-        path: platform_default_path(context)?,
-        reason: DbPathReason::PlatformDefault,
-    })
 }
 
 pub fn migrate_default_database() -> Result<MigrationReport> {
@@ -568,47 +478,6 @@ fn count_rows(connection: &Connection, table: CountTable) -> Result<u32> {
         .map_err(|_| Error::database(format!("{} row count is invalid", table.name())))
 }
 
-fn platform_default_path(context: &DbPathContext) -> Result<PathBuf> {
-    match context.platform {
-        TargetPlatform::Windows => {
-            let Some(local_appdata) = &context.local_appdata else {
-                return Err(Error::database(
-                    "LOCALAPPDATA is required to resolve the Windows default database path",
-                ));
-            };
-            Ok(local_appdata.join(DATA_DIR_NAME).join(DB_FILE_NAME))
-        }
-        TargetPlatform::Macos => {
-            let Some(home) = &context.home else {
-                return Err(Error::database(
-                    "HOME is required to resolve the macOS default database path",
-                ));
-            };
-            Ok(home
-                .join("Library")
-                .join("Application Support")
-                .join(DATA_DIR_NAME)
-                .join(DB_FILE_NAME))
-        }
-        TargetPlatform::Linux => {
-            if let Some(xdg_data_home) = &context.xdg_data_home {
-                return Ok(xdg_data_home.join(DATA_DIR_NAME).join(DB_FILE_NAME));
-            }
-
-            let Some(home) = &context.home else {
-                return Err(Error::database(
-                    "HOME is required to resolve the Linux default database path",
-                ));
-            };
-            Ok(home
-                .join(".local")
-                .join("share")
-                .join(DATA_DIR_NAME)
-                .join(DB_FILE_NAME))
-        }
-    }
-}
-
 fn validate_config_key(key: &str) -> Result<()> {
     if key.trim().is_empty() {
         return Err(Error::invalid_arguments("config key must not be empty"));
@@ -621,38 +490,6 @@ fn default_backup_path(source_path: &Path) -> PathBuf {
     parent.join(format!("agent-linker-backup-{}.db", timestamp_nanos()))
 }
 
-#[cfg(windows)]
-fn current_platform() -> TargetPlatform {
-    TargetPlatform::Windows
-}
-
-#[cfg(target_os = "macos")]
-fn current_platform() -> TargetPlatform {
-    TargetPlatform::Macos
-}
-
-#[cfg(all(not(windows), not(target_os = "macos")))]
-fn current_platform() -> TargetPlatform {
-    TargetPlatform::Linux
-}
-
-fn home_from_environment() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        env::var_os("USERPROFILE")
-            .or_else(|| env::var_os("HOME"))
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-    }
-
-    #[cfg(not(windows))]
-    {
-        env::var_os("HOME")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-    }
-}
-
 impl From<rusqlite::Error> for Error {
     fn from(error: rusqlite::Error) -> Self {
         Error::database(error.to_string())
@@ -663,103 +500,12 @@ impl From<rusqlite::Error> for Error {
 mod tests {
     use super::{
         backup_database, check_database, get_config, latest_schema_version, list_config,
-        migrate_database, resolve_database_path_with, set_config, unset_config, DbPathContext,
-        DbPathReason, DbPathResolution, TargetPlatform,
+        migrate_database, set_config, unset_config, DbPathReason, DbPathResolution,
     };
     use crate::core::{
         harness::{disable_harness, enable_harness, list_harnesses},
         test_support::TestDir,
     };
-    use std::{fs, path::Path};
-
-    fn base_context(temp_dir: &Path) -> DbPathContext {
-        DbPathContext {
-            aglink_data_dir: None,
-            executable_path: Some(temp_dir.join("bin").join("aglink.exe")),
-            local_appdata: Some(temp_dir.join("local-appdata")),
-            home: Some(temp_dir.join("home")),
-            xdg_data_home: Some(temp_dir.join("xdg")),
-            platform: TargetPlatform::Linux,
-        }
-    }
-
-    #[test]
-    fn database_path_prefers_data_dir_then_portable() {
-        let temp_dir = TestDir::new("db-path-precedence");
-        let portable_parent = temp_dir.path().join("bin");
-        fs::create_dir(&portable_parent).unwrap();
-        fs::write(portable_parent.join("agent-linker.db"), "").unwrap();
-
-        let mut context = base_context(temp_dir.path());
-        context.aglink_data_dir = Some(temp_dir.path().join("aglink-data"));
-
-        let data_dir = resolve_database_path_with(&context).unwrap();
-        assert_eq!(
-            data_dir.path,
-            temp_dir.path().join("aglink-data").join("agent-linker.db")
-        );
-        assert_eq!(data_dir.reason, DbPathReason::ExplicitDataDirEnv);
-
-        context.aglink_data_dir = None;
-        let portable = resolve_database_path_with(&context).unwrap();
-        assert_eq!(portable.path, portable_parent.join("agent-linker.db"));
-        assert_eq!(portable.reason, DbPathReason::PortableDatabase);
-    }
-
-    #[test]
-    fn database_path_uses_platform_defaults() {
-        let temp_dir = TestDir::new("db-path-default");
-        let mut context = base_context(temp_dir.path());
-        context.executable_path = None;
-
-        context.platform = TargetPlatform::Windows;
-        let windows = resolve_database_path_with(&context).unwrap();
-        assert_eq!(
-            windows.path,
-            temp_dir
-                .path()
-                .join("local-appdata")
-                .join("agent-linker")
-                .join("agent-linker.db")
-        );
-
-        context.platform = TargetPlatform::Macos;
-        let macos = resolve_database_path_with(&context).unwrap();
-        assert_eq!(
-            macos.path,
-            temp_dir
-                .path()
-                .join("home")
-                .join("Library")
-                .join("Application Support")
-                .join("agent-linker")
-                .join("agent-linker.db")
-        );
-
-        context.platform = TargetPlatform::Linux;
-        let linux = resolve_database_path_with(&context).unwrap();
-        assert_eq!(
-            linux.path,
-            temp_dir
-                .path()
-                .join("xdg")
-                .join("agent-linker")
-                .join("agent-linker.db")
-        );
-
-        context.xdg_data_home = None;
-        let linux_fallback = resolve_database_path_with(&context).unwrap();
-        assert_eq!(
-            linux_fallback.path,
-            temp_dir
-                .path()
-                .join("home")
-                .join(".local")
-                .join("share")
-                .join("agent-linker")
-                .join("agent-linker.db")
-        );
-    }
 
     #[test]
     fn migration_seeds_claude_harness_and_mappings() {

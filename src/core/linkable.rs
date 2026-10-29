@@ -8,6 +8,7 @@ use std::{
 
 use crate::core::{
     error::{Error, Result},
+    paths::normalize_windows_path,
     symlink::LinkKind,
 };
 
@@ -193,6 +194,7 @@ fn validate_source_path(source_path: &Path) -> Result<ValidatedSource> {
             source_path.display()
         ))
     })?;
+    let absolute_path = normalize_windows_path(&absolute_path);
     let metadata = fs::metadata(&absolute_path)?;
     let source_kind = if metadata.is_file() {
         LinkKind::File

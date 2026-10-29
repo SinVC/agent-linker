@@ -2,15 +2,16 @@
 //! SQL identifiers retain their legacy `framework*` names for database compatibility.
 
 use std::{
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     str::FromStr,
 };
 
 use rusqlite::{params, OptionalExtension};
 
 use crate::core::{
-    db::{open_migrated_connection, DbPathResolution},
+    db::open_migrated_connection,
     error::{Error, Result},
+    paths::{resolve_managed_project_path, validate_managed_relative_path, DbPathResolution},
     symlink::LinkKind,
     util::{bool_to_i64, timestamp, timestamp_nanos},
 };
@@ -38,12 +39,12 @@ pub struct HarnessMapping {
 }
 
 impl HarnessMapping {
-    pub fn source_in(&self, project_root: &Path) -> PathBuf {
-        project_root.join(&self.source_path)
+    pub fn source_in(&self, project_root: &Path) -> Result<PathBuf> {
+        resolve_managed_project_path(project_root, &self.source_path)
     }
 
-    pub fn link_in(&self, project_root: &Path) -> PathBuf {
-        project_root.join(&self.link_path)
+    pub fn link_in(&self, project_root: &Path) -> Result<PathBuf> {
+        resolve_managed_project_path(project_root, &self.link_path)
     }
 }
 
@@ -445,26 +446,8 @@ fn find_mapping_by_harness_and_link(
 }
 
 fn validate_mapping_path(path: &Path, label: &str) -> Result<()> {
-    if path.as_os_str().is_empty() {
-        return Err(Error::invalid_arguments(format!(
-            "{label} must not be empty"
-        )));
-    }
-
-    if path.is_absolute()
-        || path.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
-            )
-        })
-    {
-        return Err(Error::invalid_arguments(format!(
-            "{label} must stay inside the project: {}",
-            path.display()
-        )));
-    }
-    Ok(())
+    validate_managed_relative_path(path)
+        .map_err(|error| Error::invalid_arguments(format!("{label}: {error}")))
 }
 
 fn path_to_db_text(path: &Path, label: &str) -> Result<String> {
@@ -482,8 +465,11 @@ mod tests {
         enabled_harness_mappings, list_all_mappings, list_harnesses, remove_mapping, show_harness,
         AddHarnessMapping,
     };
-    use crate::core::db::{migrate_database, DbPathReason, DbPathResolution};
     use crate::core::symlink::LinkKind;
+    use crate::core::{
+        db::migrate_database,
+        paths::{DbPathReason, DbPathResolution},
+    };
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};

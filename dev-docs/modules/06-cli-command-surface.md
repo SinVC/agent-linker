@@ -158,6 +158,7 @@ aglink doctor
 - `--dry-run` 覆盖 `link`、`unlink`、`clean`、`group link` 和 `group unlink`；`init` 在 MVP 中暂不支持 dry run。
 - `status --json` 的 `links[].status` 使用稳定 snake_case 机器值：`missing`、`correct_symlink`、`wrong_symlink_target`、`broken_symlink`、`existing_real_file`、`existing_real_directory`、`unsupported_file_type`。
 - `unlink` 和 `clean` 只处理 manifest 中由 `aglink` 管理的 symlink。
+- 项目操作统一使用受控路径入口；`.agents` 或链接、相对 source 的已有父目录为 symlink 时失败，不访问其外部目标。
 - `doctor` 检查数据库、migration、manifest、Harness Adapter、Windows Broker 和 symlink 后端可用性。
 - 临时验证场景由 `aglink link <name>` 和后续可能的 `aglink link --local <path>` 承担，`--local` 暂不进入正式命令集。
 
@@ -165,5 +166,6 @@ aglink doctor
 
 - 全局 Registry 命令不直接改变当前项目链接状态。
 - 当前项目链接命令必须写入或读取 `.agents/links.toml`。
+- `link`、`unlink`、`status`、`clean`、`doctor` 及 group 链接命令从当前目录向上定位最近的 `.agents/links.toml`，遇文件系统根或 symlink 目录停止；未找到时提示先运行 `init`。`init` 严格使用当前目录，不上查。
 - 用户输出默认简洁，`--verbose` 提供诊断信息，`--quiet` 只输出必要错误。
 - 成功操作输出创建、跳过或更新等摘要。
