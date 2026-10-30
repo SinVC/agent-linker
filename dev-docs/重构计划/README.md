@@ -11,7 +11,7 @@
 - [x] 01 [统一路径入口与受控项目路径](01-paths.md)
 - [x] 02 [Manifest 来源隔离与解绑范围](02-manifest-origin.md)
 - [x] 03 [Manifest 原子保存](03-manifest-save.md)
-- [ ] 04 [Symlink 原子替换与断链 force](04-symlink-replace.md)
+- [x] 04 [Symlink 原子替换与断链 force](04-symlink-replace.md)
 - [ ] 05 [注册项标识符与 alias 查询空间隔离](05-item-identity.md)
 
 ## 阶段二：存储与 Schema v3
