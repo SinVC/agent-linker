@@ -27,9 +27,9 @@ core 模块职责：
 - `paths`：项目根、全局数据目录、数据库路径、portable 模式、环境变量和路径转换。
 - `symlink`：Provider、链接类型、链接状态、平台后端和测试 mock。
 - `manifest`：`.agents/links.toml` 读写、schema 校验和状态查询。
-- `db` / `migrations`：SQLite 连接、migration 和数据库诊断。
-- `registry`：Linkable Item Registry 持久化访问。
-- `harness`：Harness Adapter、mapping 和默认 Harness 初始化。
+- `store`：统一 Store 的只读/读写入口、显式 migration、backup 和数据库诊断；普通业务不能隐式初始化。
+- `registry`：Store 上的 Linkable Item/Group 持久化访问和事务，group list 用聚合摘要。
+- `harness`：Store 上的 Harness Adapter、mapping 与唯一 builtin_harnesses 内置定义；Seed 只由 Store 显式迁移消费。
 - `linkable`：Linkable Item 模型、业务约束、alias、kind 检测和默认 link path。
 
 依赖规则：
@@ -52,8 +52,8 @@ core 模块职责：
 允许扩展：
 
 - 新 Agent Harness 通过 Harness Adapter 数据扩展。
-- 新 mapping 通过 Harness Adapter 数据扩展；SQLite 表名保留 `framework_mappings` 以兼容已有数据库。
-- 新 source ownership 模式通过预留字段扩展。
+- 新 mapping 通过 Harness Adapter 数据扩展；Schema v3 使用 harness_mappings，通过事务迁移保留旧 ID。
+- 不为尚无消费者的 source ownership/repo 元数据保留字段。
 - 后续可在不破坏 command 层的情况下替换或拆分 core 模块。
 
 ## 验收口径

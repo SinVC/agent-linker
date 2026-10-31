@@ -8,8 +8,8 @@
 
 ## 代码入口
 
-- [Error 及转换](../../src/core/error.rs#L1)、原 [rusqlite 错误转换](../../src/core/db.rs#L767)，06 后在 Store 相关代码。
-- 原 [path_error](../../src/core/db.rs#L416)、[source 校验错误](../../src/core/linkable.rs#L118)、[registry conversion_error](../../src/core/registry.rs#L627)。
+- [Error 及转换](../../src/core/error.rs#L1)、原 [rusqlite 错误转换](../../src/core/store.rs)，06 后在 Store 相关代码。
+- 原 [path_error](../../src/core/store.rs)、[source 校验错误](../../src/core/linkable.rs#L118)、[registry conversion_error](../../src/core/registry.rs#L627)。
 - [SymlinkError](../../src/core/symlink.rs#L133)、[Broker 错误映射](../../src/core/symlink.rs#L511)。
 - [CLI run_and_print](../../src/cli.rs#L301)、[print_error](../../src/cli.rs#L1036)。
 

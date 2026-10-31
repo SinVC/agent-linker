@@ -22,11 +22,6 @@ if ([string]::IsNullOrWhiteSpace($BrokerExe)) {
     $BrokerExe = Join-Path (Split-Path -Parent $PSScriptRoot) "broker\win-symlinks-broker.exe"
 }
 
-$brokerPath = [System.IO.Path]::GetFullPath($BrokerExe)
-if (-not (Test-Path -LiteralPath $brokerPath -PathType Leaf)) {
-    throw "Broker executable not found: $brokerPath"
-}
-
 $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($existing) {
     if ($existing.Status -ne "Running") {
@@ -34,6 +29,11 @@ if ($existing) {
     }
     Write-Host "$ServiceName is already installed."
     exit 0
+}
+
+$brokerPath = [System.IO.Path]::GetFullPath($BrokerExe)
+if (-not (Test-Path -LiteralPath $brokerPath -PathType Leaf)) {
+    throw "Broker executable not found: $brokerPath"
 }
 
 $brokerDir = Split-Path -Parent $brokerPath

@@ -8,11 +8,9 @@
 
 ## 代码入口
 
-- [Registry 的 rename/remove/refresh](../../src/core/registry.rs#L123)、[add/create](../../src/core/registry.rs#L239)。
-- [group rename/delete](../../src/core/registry.rs#L439)、[add_group_items](../../src/core/registry.rs#L466)、[remove_group_items](../../src/core/registry.rs#L517)。
-- [Harness mapping 写入](../../src/core/harness.rs#L231)、[启用标记](../../src/core/harness.rs#L308)。
-- [group command/report](../../src/commands/mod.rs#L109)、[run_group](../../src/commands/mod.rs#L398)、[CLI report_lines](../../src/cli.rs#L582)。
-- 原 [db 迁移入口](../../src/core/db.rs#L201)在 06 后为 `store.rs` 中 `Store::migrate`。
+- [Store::write/migrate](../../src/core/store.rs)：写用例、迁移和 Seed 的事务边界。
+- [Item/Group CRUD 和成员增删](../../src/core/registry.rs)、[Harness 启停与 mapping 写入](../../src/core/harness.rs)。
+- [GroupUpdateReport 消费](../../src/commands/mod.rs)、[跳过结果输出](../../src/cli.rs)、[故障注入黑盒测试](../../tests/phase2_blind.rs)。
 
 ## 修改清单
 
@@ -32,4 +30,4 @@
 
 ## 执行记录
 
-未执行。完成时填写事务边界、故障注入场景和验证结果，再勾选 TODO 07。
+进度、验证结果与未解决问题见[本步进度](../重构编排/steps/07-progress.md)。

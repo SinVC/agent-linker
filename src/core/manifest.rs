@@ -11,8 +11,10 @@ use crate::core::{
     error::{Error, Result},
     harness::{default_init_mappings, HarnessMapping},
     paths::{
-        managed_relative_path_key, resolve_managed_project_path, validate_managed_relative_path,
+        managed_relative_path_key, resolve_database_path, resolve_managed_project_path,
+        validate_managed_relative_path, DbPathResolution,
     },
+    store::Store,
     symlink::{
         default_provider, ensure_symlink, CreateSymlinkOptions, CreateSymlinkOutcome, LinkKind,
         SymlinkBackend, SymlinkProvider,
@@ -39,8 +41,8 @@ pub struct LinkRecord {
     pub link_kind: LinkKind,
     pub provider_backend: SymlinkBackend,
     pub created_by_command: String,
-    pub created_at: String,
-    pub updated_at: String,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,8 +76,6 @@ impl Manifest {
             require_non_empty("item_id", &link.item_id)?;
             require_non_empty("item_name", &link.item_name)?;
             require_non_empty("created_by_command", &link.created_by_command)?;
-            require_non_empty("created_at", &link.created_at)?;
-            require_non_empty("updated_at", &link.updated_at)?;
 
             if link.source_path.as_os_str().is_empty() {
                 return Err(Error::manifest(format!(
@@ -146,6 +146,37 @@ pub fn init_project_with_provider(
     project_root: &Path,
     provider: &mut dyn SymlinkProvider,
 ) -> Result<InitProjectReport> {
+    init_project_with_store(project_root, provider, &resolve_database_path()?)
+}
+
+pub fn init_project_with_store(
+    project_root: &Path,
+    provider: &mut dyn SymlinkProvider,
+    resolution: &DbPathResolution,
+) -> Result<InitProjectReport> {
+    let mappings = match fs::metadata(&resolution.path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => default_init_mappings(),
+        Err(error) => return Err(error.into()),
+        Ok(_) => Store::open_ro(resolution)?
+            .list_harnesses()?
+            .into_iter()
+            .filter(|harness| harness.enabled)
+            .flat_map(|harness| {
+                harness
+                    .mappings
+                    .into_iter()
+                    .map(move |mapping| mapping.for_project(&harness.name))
+            })
+            .collect(),
+    };
+    init_project_with_mappings(project_root, provider, &mappings)
+}
+
+pub fn init_project_with_mappings(
+    project_root: &Path,
+    provider: &mut dyn SymlinkProvider,
+    mappings: &[HarnessMapping],
+) -> Result<InitProjectReport> {
     let mut report = InitProjectReport {
         project_root: project_root.to_path_buf(),
         manifest_path: manifest_path(project_root),
@@ -165,10 +196,10 @@ pub fn init_project_with_provider(
 
     let mut manifest = load_manifest(project_root)?;
 
-    ensure_harness_parent_dirs(project_root, &default_init_mappings(), &mut report)?;
+    ensure_harness_parent_dirs(project_root, mappings, &mut report)?;
     update_gitignore(project_root, &mut report)?;
 
-    for mapping in default_init_mappings() {
+    for mapping in mappings {
         let source = mapping.source_in(project_root)?;
         let link = mapping.link_in(project_root)?;
         let outcome = ensure_symlink(
@@ -186,7 +217,7 @@ pub fn init_project_with_provider(
             outcome,
         });
 
-        manifest.upsert(record_from_mapping(&mapping, provider.backend()));
+        manifest.upsert(record_from_mapping(mapping, provider.backend()));
     }
 
     manifest.validate()?;
@@ -468,8 +499,8 @@ fn serialize_manifest(manifest: &Manifest) -> String {
             &link.provider_backend.to_string(),
         );
         push_kv(&mut output, "created_by_command", &link.created_by_command);
-        push_kv(&mut output, "created_at", &link.created_at);
-        push_kv(&mut output, "updated_at", &link.updated_at);
+        output.push_str(&format!("created_at = {}\n", link.created_at));
+        output.push_str(&format!("updated_at = {}\n", link.updated_at));
     }
 
     output
@@ -519,10 +550,13 @@ fn parse_manifest(input: &str) -> Result<Manifest> {
             )));
         };
 
-        if table
-            .insert(key, parse_string_value(&value, line_number)?)
-            .is_some()
-        {
+        let value =
+            if matches!(key.as_str(), "created_at" | "updated_at") && !value.starts_with('"') {
+                value
+            } else {
+                parse_string_value(&value, line_number)?
+            };
+        if table.insert(key, value).is_some() {
             return Err(Error::manifest(format!(
                 "manifest key is duplicated on line {line_number}"
             )));
@@ -585,8 +619,8 @@ fn link_from_table(mut table: BTreeMap<String, String>) -> Result<LinkRecord> {
         link_kind: parse_link_kind(&required_field(&mut table, "link_kind")?)?,
         provider_backend: parse_backend(&required_field(&mut table, "provider_backend")?)?,
         created_by_command: required_field(&mut table, "created_by_command")?,
-        created_at: required_field(&mut table, "created_at")?,
-        updated_at: required_field(&mut table, "updated_at")?,
+        created_at: parse_timestamp(&required_field(&mut table, "created_at")?)?,
+        updated_at: parse_timestamp(&required_field(&mut table, "updated_at")?)?,
     };
 
     if let Some(extra) = table.keys().next() {
@@ -597,6 +631,14 @@ fn link_from_table(mut table: BTreeMap<String, String>) -> Result<LinkRecord> {
     }
 
     Ok(link)
+}
+
+fn parse_timestamp(value: &str) -> Result<i64> {
+    value
+        .strip_prefix("unix:")
+        .unwrap_or(value)
+        .parse()
+        .map_err(|_| Error::manifest(format!("invalid timestamp: {value}")))
 }
 
 fn required_field(table: &mut BTreeMap<String, String>, key: &str) -> Result<String> {
@@ -684,280 +726,5 @@ fn unescape_manifest_string(value: &str, line_number: usize) -> Result<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        init_project_with_provider, load_manifest, managed_gitignore_block, parse_manifest,
-        replace_or_append_managed_block, save_manifest, serialize_manifest, Manifest,
-    };
-    use crate::core::{
-        error::Error,
-        symlink::{LinkKind, MockEntry, MockSymlinkProvider},
-        test_support::TestDir,
-    };
-    use std::{
-        fs,
-        path::{Path, PathBuf},
-    };
-
-    fn seeded_provider(project_root: &Path) -> MockSymlinkProvider {
-        let mut provider = MockSymlinkProvider::new();
-        provider.add_dir(project_root);
-        provider.add_file(project_root.join("AGENTS.md"));
-        provider.add_dir(project_root.join(".agents"));
-        provider.add_dir(project_root.join(".agents").join("skills"));
-        provider.add_dir(project_root.join(".claude"));
-        provider
-    }
-
-    #[test]
-    fn temporary_manifests_reject_unsafe_and_duplicate_link_paths() {
-        let project = TestDir::new("manifest-path-validation");
-        let record = super::record_from_mapping(
-            &crate::core::harness::default_init_mappings()[0],
-            crate::core::symlink::SymlinkBackend::Mock,
-        );
-        fs::create_dir(project.path().join(".agents")).unwrap();
-        let disk_path = super::manifest_path(project.path());
-        for path in [
-            "",
-            "/outside",
-            "C:outside",
-            "C:/outside",
-            r"C:\outside",
-            "../outside",
-            "safe/../outside",
-        ] {
-            let mut record = record.clone();
-            record.link_path = PathBuf::from(path);
-            let manifest = Manifest {
-                schema_version: 1,
-                links: vec![record],
-            };
-            fs::write(&disk_path, serialize_manifest(&manifest)).unwrap();
-            assert!(load_manifest(project.path()).is_err(), "{path}");
-            let original = fs::read(&disk_path).unwrap();
-            assert!(save_manifest(project.path(), &manifest).is_err(), "{path}");
-            assert_eq!(fs::read(&disk_path).unwrap(), original);
-        }
-        let mut duplicate = record.clone();
-        duplicate.id.push_str(":duplicate");
-        for path in ["CLAUDE.md", "./CLAUDE.md"] {
-            duplicate.link_path = PathBuf::from(path);
-            assert!(Manifest {
-                schema_version: 1,
-                links: vec![record.clone(), duplicate.clone()]
-            }
-            .validate()
-            .is_err());
-        }
-        #[cfg(windows)]
-        {
-            duplicate.link_path = PathBuf::from("claude.MD");
-            assert!(Manifest {
-                schema_version: 1,
-                links: vec![record, duplicate]
-            }
-            .validate()
-            .is_err());
-        }
-    }
-
-    #[test]
-    fn init_uses_the_given_directory_even_when_a_parent_project_exists() {
-        let project = TestDir::new("init-current-only");
-        let mut outer_provider = seeded_provider(project.path());
-        init_project_with_provider(project.path(), &mut outer_provider).unwrap();
-        let original = fs::read(super::manifest_path(project.path())).unwrap();
-        let child = project.path().join("child");
-        fs::create_dir(&child).unwrap();
-        let mut child_provider = seeded_provider(&child);
-        let report = init_project_with_provider(&child, &mut child_provider).unwrap();
-        assert_eq!(report.project_root, child);
-        assert!(super::manifest_path(&child).is_file());
-        assert_eq!(
-            fs::read(super::manifest_path(project.path())).unwrap(),
-            original
-        );
-    }
-
-    #[test]
-    fn manifest_round_trips_generated_schema() {
-        let temp_dir = TestDir::new("manifest");
-        let mut provider = seeded_provider(temp_dir.path());
-
-        init_project_with_provider(temp_dir.path(), &mut provider).unwrap();
-        let manifest = load_manifest(temp_dir.path()).unwrap();
-        save_manifest(temp_dir.path(), &manifest).unwrap();
-        let reparsed = load_manifest(temp_dir.path()).unwrap();
-
-        assert_eq!(manifest, reparsed);
-        assert_eq!(manifest.links.len(), 2);
-    }
-
-    #[test]
-    fn legacy_framework_name_manifest_remains_readable_and_writable() {
-        let legacy = r#"schema_version = 1
-[[links]]
-id = "init:claude:agents-md"
-scope = "project"
-framework_name = "claude"
-item_id = "project:agents-md"
-item_name = "AGENTS.md"
-source_path = "AGENTS.md"
-link_path = "CLAUDE.md"
-link_kind = "file"
-provider_backend = "mock"
-created_by_command = "init"
-created_at = "unix:1"
-updated_at = "unix:1"
-"#;
-        let manifest = parse_manifest(legacy).unwrap();
-        assert_eq!(manifest.links[0].harness_name, "claude");
-        assert_eq!(manifest.links[0].id, "init:claude:agents-md");
-        let saved = serialize_manifest(&manifest);
-        assert!(saved.contains("framework_name = \"claude\""));
-        assert!(!saved.contains("harness_name ="));
-        assert_eq!(parse_manifest(&saved).unwrap(), manifest);
-    }
-
-    #[test]
-    fn damaged_manifest_fails_without_overwrite() {
-        let temp_dir = TestDir::new("manifest");
-        fs::create_dir(temp_dir.path().join(".agents")).unwrap();
-        let manifest_path = temp_dir.path().join(".agents").join("links.toml");
-        fs::write(&manifest_path, "not valid").unwrap();
-
-        let mut provider = seeded_provider(temp_dir.path());
-        let error = init_project_with_provider(temp_dir.path(), &mut provider).unwrap_err();
-
-        assert!(matches!(error, Error::Manifest(_)));
-        assert_eq!(fs::read_to_string(manifest_path).unwrap(), "not valid");
-    }
-
-    #[test]
-    fn init_creates_project_files_links_manifest_and_gitignore() {
-        let temp_dir = TestDir::new("manifest");
-        let mut provider = seeded_provider(temp_dir.path());
-
-        let report = init_project_with_provider(temp_dir.path(), &mut provider).unwrap();
-
-        assert!(temp_dir.path().join("AGENTS.md").is_file());
-        assert!(temp_dir.path().join(".agents").is_dir());
-        assert!(temp_dir.path().join(".agents").join("skills").is_dir());
-        assert!(temp_dir.path().join(".claude").is_dir());
-        assert!(temp_dir.path().join(".agents").join("links.toml").is_file());
-        assert_eq!(report.link_outcomes.len(), 2);
-        assert!(matches!(
-            provider.entry(&temp_dir.path().join("CLAUDE.md")),
-            Some(MockEntry::Symlink {
-                kind: LinkKind::File,
-                ..
-            })
-        ));
-        assert!(matches!(
-            provider.entry(&temp_dir.path().join(".claude").join("skills")),
-            Some(MockEntry::Symlink {
-                kind: LinkKind::Directory,
-                ..
-            })
-        ));
-
-        let gitignore = fs::read_to_string(temp_dir.path().join(".gitignore")).unwrap();
-        assert_eq!(gitignore, managed_gitignore_block());
-
-        let manifest = load_manifest(temp_dir.path()).unwrap();
-        assert_eq!(manifest.links.len(), 2);
-        assert!(manifest.links.iter().any(|link| {
-            link.harness_name == "claude"
-                && link.source_path == PathBuf::from("AGENTS.md")
-                && link.link_path == PathBuf::from("CLAUDE.md")
-        }));
-    }
-
-    #[test]
-    fn repeated_init_is_idempotent_and_preserves_agents_content() {
-        let temp_dir = TestDir::new("manifest");
-        fs::write(temp_dir.path().join("AGENTS.md"), "user content\n").unwrap();
-        fs::write(temp_dir.path().join(".gitignore"), "target/\n").unwrap();
-
-        let mut provider = seeded_provider(temp_dir.path());
-        init_project_with_provider(temp_dir.path(), &mut provider).unwrap();
-        let first_manifest =
-            fs::read_to_string(temp_dir.path().join(".agents").join("links.toml")).unwrap();
-
-        let mut provider = provider;
-        init_project_with_provider(temp_dir.path(), &mut provider).unwrap();
-
-        assert_eq!(
-            fs::read_to_string(temp_dir.path().join("AGENTS.md")).unwrap(),
-            "user content\n"
-        );
-        let gitignore = fs::read_to_string(temp_dir.path().join(".gitignore")).unwrap();
-        assert!(gitignore.starts_with("target/\n"));
-        assert_eq!(gitignore.matches("# BEGIN aglink managed").count(), 1);
-        assert!(
-            fs::read_to_string(temp_dir.path().join(".agents").join("links.toml"))
-                .unwrap()
-                .contains("init:claude:agents-md")
-        );
-        assert!(parse_manifest(&first_manifest).is_ok());
-    }
-
-    #[test]
-    fn init_rejects_real_file_at_claude_link() {
-        let temp_dir = TestDir::new("manifest");
-        let mut provider = seeded_provider(temp_dir.path());
-        provider.add_file(temp_dir.path().join("CLAUDE.md"));
-
-        let error = init_project_with_provider(temp_dir.path(), &mut provider).unwrap_err();
-
-        assert!(matches!(error, Error::Symlink(_)));
-    }
-
-    #[test]
-    fn init_rejects_real_directory_at_claude_skills_link() {
-        let temp_dir = TestDir::new("manifest");
-        let mut provider = seeded_provider(temp_dir.path());
-        provider.add_dir(temp_dir.path().join(".claude").join("skills"));
-
-        let error = init_project_with_provider(temp_dir.path(), &mut provider).unwrap_err();
-
-        assert!(matches!(error, Error::Symlink(_)));
-    }
-
-    #[test]
-    fn init_rejects_wrong_symlink_target() {
-        let temp_dir = TestDir::new("manifest");
-        let mut provider = seeded_provider(temp_dir.path());
-        provider.add_file(temp_dir.path().join("OTHER.md"));
-        provider.add_symlink(
-            temp_dir.path().join("CLAUDE.md"),
-            temp_dir.path().join("OTHER.md"),
-            LinkKind::File,
-        );
-
-        let error = init_project_with_provider(temp_dir.path(), &mut provider).unwrap_err();
-
-        assert!(matches!(error, Error::Symlink(_)));
-    }
-
-    #[test]
-    fn gitignore_managed_block_preserves_user_content() {
-        let original = "target/\n\n# BEGIN aglink managed\nold\n# END aglink managed\nlogs/\n";
-        let updated =
-            replace_or_append_managed_block(original, &managed_gitignore_block()).unwrap();
-
-        assert!(updated.starts_with("target/\n\n"));
-        assert!(updated.contains(".claude/"));
-        assert!(updated.ends_with("logs/\n"));
-        assert_eq!(updated.matches("# BEGIN aglink managed").count(), 1);
-    }
-
-    #[test]
-    fn existing_empty_manifest_is_invalid() {
-        let error = parse_manifest("").unwrap_err();
-
-        assert!(matches!(error, Error::Manifest(_)));
-        assert_eq!(Manifest::empty().links.len(), 0);
-    }
-}
+#[path = "manifest_tests.rs"]
+mod tests;

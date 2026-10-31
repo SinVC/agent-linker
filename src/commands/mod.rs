@@ -1,9 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::core::{
-    db::{self, ConfigEntry, ConfigUnsetReport, DbBackupReport, DbCheckReport, MigrationReport},
     error::{Error, Result},
-    harness::{self, AddHarnessMapping, StoredHarness, StoredHarnessMapping},
+    harness::{AddHarnessMapping, StoredHarness, StoredHarnessMapping},
     linkable::{LinkableItem, LinkableItemType},
     manifest::{init_current_project, InitProjectReport},
     paths::{self, DbPathResolution},
@@ -15,14 +14,14 @@ use crate::core::{
         LinkGroupReport, LinkItemReport, LinkItemRequest, LinkOptions, StatusReport, UnlinkOptions,
         UnlinkReport,
     },
-    registry::{self, AddLinkableItem, Group},
+    registry::{AddLinkableItem, Group, GroupSummary, GroupUpdateReport},
+    store::{self, DbBackupReport, DbCheckReport, MigrationReport, Store},
     symlink::LinkKind,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Init,
-    Config(ConfigCommand),
     Db(DbCommand),
     Harness(HarnessCommand),
     Skill(LinkableCommand),
@@ -33,15 +32,6 @@ pub enum Command {
     Status(StatusCommand),
     Clean(CleanCommand),
     Doctor(DoctorCommand),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConfigCommand {
-    Path,
-    List,
-    Get { key: String },
-    Set { key: String, value: String },
-    Unset { key: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,14 +169,6 @@ pub struct DoctorCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandReport {
     Init(InitProjectReport),
-    ConfigPath(DbPathResolution),
-    ConfigList(Vec<ConfigEntry>),
-    ConfigGet {
-        key: String,
-        entry: Option<ConfigEntry>,
-    },
-    ConfigSet(ConfigEntry),
-    ConfigUnset(ConfigUnsetReport),
     DbPath(DbPathResolution),
     DbMigrate(MigrationReport),
     DbBackup(DbBackupReport),
@@ -210,11 +192,11 @@ pub enum CommandReport {
     LinkableRemoved(LinkableItem),
     LinkableRefreshed(LinkableItem),
     GroupCreated(Group),
-    GroupList(Vec<Group>),
+    GroupList(Vec<GroupSummary>),
     GroupShow(Group),
     GroupRenamed(Group),
     GroupDeleted(Group),
-    GroupUpdated(Group),
+    GroupUpdated(GroupUpdateReport),
     LinkItem(LinkItemReport),
     LinkGroup(LinkGroupReport),
     Unlink(UnlinkReport),
@@ -230,6 +212,7 @@ impl CommandReport {
     pub fn is_success(&self) -> bool {
         match self {
             CommandReport::Doctor(report) => report.ok,
+            CommandReport::DbCheck(report) => report.is_ok(),
             _ => true,
         }
     }
@@ -238,7 +221,6 @@ impl CommandReport {
 pub fn run(command: Command) -> Result<CommandReport> {
     match command {
         Command::Init => Ok(CommandReport::Init(init_current_project()?)),
-        Command::Config(command) => run_config(command),
         Command::Db(command) => run_db(command),
         Command::Harness(command) => run_harness(command),
         Command::Skill(command) => run_linkable(command, LinkableItemType::Skill),
@@ -262,57 +244,38 @@ pub fn run(command: Command) -> Result<CommandReport> {
     }
 }
 
-fn run_config(command: ConfigCommand) -> Result<CommandReport> {
-    let resolution = paths::resolve_database_path()?;
-    match command {
-        ConfigCommand::Path => Ok(CommandReport::ConfigPath(resolution)),
-        ConfigCommand::List => Ok(CommandReport::ConfigList(db::list_config(&resolution)?)),
-        ConfigCommand::Get { key } => {
-            let entry = db::get_config(&resolution, &key)?;
-            Ok(CommandReport::ConfigGet { key, entry })
-        }
-        ConfigCommand::Set { key, value } => Ok(CommandReport::ConfigSet(db::set_config(
-            &resolution,
-            &key,
-            &value,
-        )?)),
-        ConfigCommand::Unset { key } => Ok(CommandReport::ConfigUnset(db::unset_config(
-            &resolution,
-            &key,
-        )?)),
-    }
-}
-
 fn run_db(command: DbCommand) -> Result<CommandReport> {
     match command {
         DbCommand::Path => Ok(CommandReport::DbPath(paths::resolve_database_path()?)),
-        DbCommand::Migrate => Ok(CommandReport::DbMigrate(db::migrate_default_database()?)),
-        DbCommand::Backup { path } => Ok(CommandReport::DbBackup(db::backup_default_database(
+        DbCommand::Migrate => Ok(CommandReport::DbMigrate(store::migrate_default_database()?)),
+        DbCommand::Backup { path } => Ok(CommandReport::DbBackup(store::backup_default_database(
             path.as_deref(),
         )?)),
-        DbCommand::Check => Ok(CommandReport::DbCheck(db::check_default_database()?)),
+        DbCommand::Check => Ok(CommandReport::DbCheck(store::check_default_database()?)),
     }
 }
 
 fn run_harness(command: HarnessCommand) -> Result<CommandReport> {
     let resolution = paths::resolve_database_path()?;
+    let store = match &command {
+        HarnessCommand::Enable { .. }
+        | HarnessCommand::Disable { .. }
+        | HarnessCommand::MappingAdd { .. }
+        | HarnessCommand::MappingRemove { .. } => Store::open_rw(&resolution)?,
+        _ => Store::open_ro(&resolution)?,
+    };
     match command {
-        HarnessCommand::List => Ok(CommandReport::HarnessList(harness::list_harnesses(
-            &resolution,
-        )?)),
-        HarnessCommand::Show { name } => Ok(CommandReport::HarnessShow(harness::show_harness(
-            &resolution,
-            &name,
-        )?)),
+        HarnessCommand::List => Ok(CommandReport::HarnessList(store.list_harnesses()?)),
+        HarnessCommand::Show { name } => Ok(CommandReport::HarnessShow(store.show_harness(&name)?)),
         HarnessCommand::Enable { name } => {
-            harness::enable_harness(&resolution, &name)?;
+            store.enable_harness(&name)?;
             Ok(CommandReport::HarnessEnabled {
                 name,
                 enabled: true,
             })
         }
         HarnessCommand::Disable { name } => {
-            harness::disable_harness(&resolution, &name)?;
+            store.disable_harness(&name)?;
             Ok(CommandReport::HarnessEnabled {
                 name,
                 enabled: false,
@@ -320,9 +283,9 @@ fn run_harness(command: HarnessCommand) -> Result<CommandReport> {
         }
         HarnessCommand::MappingList { name } => {
             let mappings = if let Some(name) = name {
-                harness::list_mappings_for_harness(&resolution, &name)?
+                store.list_mappings_for_harness(&name)?
             } else {
-                harness::list_all_mappings(&resolution)?
+                store.list_all_mappings()?
             };
             Ok(CommandReport::HarnessMappingList(mappings))
         }
@@ -331,8 +294,7 @@ fn run_harness(command: HarnessCommand) -> Result<CommandReport> {
             source,
             link,
             kind,
-        } => Ok(CommandReport::HarnessMappingAdded(harness::add_mapping(
-            &resolution,
+        } => Ok(CommandReport::HarnessMappingAdded(store.add_mapping(
             AddHarnessMapping {
                 harness: name,
                 source_path: source,
@@ -341,13 +303,17 @@ fn run_harness(command: HarnessCommand) -> Result<CommandReport> {
             },
         )?)),
         HarnessCommand::MappingRemove { name, link } => Ok(CommandReport::HarnessMappingRemoved(
-            harness::remove_mapping(&resolution, &name, &link)?,
+            store.remove_mapping(&name, &link)?,
         )),
     }
 }
 
 fn run_linkable(command: LinkableCommand, item_type: LinkableItemType) -> Result<CommandReport> {
     let resolution = paths::resolve_database_path()?;
+    let store = match &command {
+        LinkableCommand::List | LinkableCommand::Show { .. } => Store::open_ro(&resolution)?,
+        _ => Store::open_rw(&resolution)?,
+    };
     match command {
         LinkableCommand::Add {
             path,
@@ -359,68 +325,72 @@ fn run_linkable(command: LinkableCommand, item_type: LinkableItemType) -> Result
                 Some(name) => name,
                 None => default_item_name(&path)?,
             };
-            let item = registry::add_item(
-                &resolution,
-                AddLinkableItem {
-                    item_type,
-                    name,
-                    alias,
-                    source_path: path,
-                    default_target_dir: target_dir,
-                    description: None,
-                },
-            )?;
+            let item = store.add_item(AddLinkableItem {
+                item_type,
+                name,
+                alias,
+                source_path: path,
+                default_target_dir: target_dir,
+                description: None,
+            })?;
             Ok(CommandReport::LinkableAdded(item))
         }
         LinkableCommand::List => Ok(CommandReport::LinkableList {
             item_type,
-            items: registry::list_items(&resolution, item_type)?,
+            items: store.list_items(item_type)?,
         }),
-        LinkableCommand::Show { name } => Ok(CommandReport::LinkableShow(registry::show_item(
-            &resolution,
-            item_type,
-            &name,
-        )?)),
+        LinkableCommand::Show { name } => Ok(CommandReport::LinkableShow(
+            store.find_item(item_type, &name)?,
+        )),
         LinkableCommand::Rename { old, new } => Ok(CommandReport::LinkableRenamed(
-            registry::rename_item(&resolution, item_type, &old, &new)?,
+            store.rename_item(item_type, &old, &new)?,
         )),
         LinkableCommand::Remove { name } => Ok(CommandReport::LinkableRemoved(
-            registry::remove_item(&resolution, item_type, &name)?,
+            store.remove_item(item_type, &name)?,
         )),
         LinkableCommand::Refresh { name } => Ok(CommandReport::LinkableRefreshed(
-            registry::refresh_item(&resolution, item_type, &name)?,
+            store.refresh_item(item_type, &name)?,
         )),
     }
 }
 
 fn run_group(command: GroupCommand) -> Result<CommandReport> {
     let resolution = paths::resolve_database_path()?;
+    if let GroupCommand::Link { group, options } = command {
+        return Ok(CommandReport::LinkGroup(
+            link_group_current_project_with_options(&group, options)?,
+        ));
+    }
+    if let GroupCommand::Unlink { group, options } = command {
+        return Ok(CommandReport::Unlink(
+            unlink_group_current_project_with_options(&group, options)?,
+        ));
+    }
+    let store = match &command {
+        GroupCommand::List | GroupCommand::Show { .. } => Store::open_ro(&resolution)?,
+        _ => Store::open_rw(&resolution)?,
+    };
     match command {
-        GroupCommand::Create { name } => Ok(CommandReport::GroupCreated(registry::create_group(
-            &resolution,
-            &name,
-            None,
-        )?)),
-        GroupCommand::List => Ok(CommandReport::GroupList(registry::list_groups(
-            &resolution,
-        )?)),
-        GroupCommand::Show { name } => Ok(CommandReport::GroupShow(registry::show_group(
-            &resolution,
-            &name,
-        )?)),
-        GroupCommand::Rename { old, new } => Ok(CommandReport::GroupRenamed(
-            registry::rename_group(&resolution, &old, &new)?,
+        GroupCommand::Create { name } => Ok(CommandReport::GroupCreated(
+            store.create_group(&name, None)?,
         )),
-        GroupCommand::Delete { name } => Ok(CommandReport::GroupDeleted(registry::delete_group(
-            &resolution,
-            &name,
-        )?)),
+        GroupCommand::List => Ok(CommandReport::GroupList(store.list_group_summaries()?)),
+        GroupCommand::Show { name } => Ok(CommandReport::GroupShow(store.show_group(&name)?)),
+        GroupCommand::Rename { old, new } => {
+            Ok(CommandReport::GroupRenamed(store.rename_group(&old, &new)?))
+        }
+        GroupCommand::Delete { name } => {
+            Ok(CommandReport::GroupDeleted(store.delete_group(&name)?))
+        }
         GroupCommand::Add { group, items } => Ok(CommandReport::GroupUpdated(
-            registry::add_group_items(&resolution, &group, &items)?,
+            store.add_group_items(&group, &items)?,
         )),
-        GroupCommand::Remove { group, items } => Ok(CommandReport::GroupUpdated(
-            registry::remove_group_items(&resolution, &group, &items)?,
-        )),
+        GroupCommand::Remove { group, items } => {
+            Ok(CommandReport::GroupUpdated(GroupUpdateReport {
+                group: store.remove_group_items(&group, &items)?,
+                skipped: Vec::new(),
+            }))
+        }
         GroupCommand::Link { group, options } => Ok(CommandReport::LinkGroup(
             link_group_current_project_with_options(&group, options)?,
         )),
@@ -461,50 +431,5 @@ fn default_item_name(path: &Path) -> Result<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{default_item_name, CommandReport};
-    use std::path::PathBuf;
-
-    #[test]
-    fn default_item_name_uses_path_stem() {
-        assert_eq!(
-            default_item_name(&PathBuf::from("notes.md")).unwrap(),
-            "notes"
-        );
-        assert_eq!(
-            default_item_name(&PathBuf::from("skill-dir")).unwrap(),
-            "skill-dir"
-        );
-    }
-
-    #[test]
-    fn doctor_report_controls_success_status() {
-        let report = CommandReport::Doctor(crate::core::project_links::DoctorReport {
-            checks: Vec::new(),
-            ok: false,
-        });
-        assert!(!report.is_success());
-    }
-
-    #[test]
-    fn command_layer_does_not_use_forbidden_low_level_apis() {
-        let source = include_str!("mod.rs");
-        for forbidden in [
-            concat!("rusq", "lite"),
-            concat!("std::", "fs"),
-            concat!("std::", "os::"),
-            concat!(".agents/", "links.toml"),
-            concat!("load_", "manifest"),
-            concat!("save_", "manifest"),
-            concat!("ensure_", "symlink"),
-            concat!("symlink_", "file"),
-            concat!("symlink_", "dir"),
-            concat!("read_", "link("),
-        ] {
-            assert!(
-                !source.contains(forbidden),
-                "commands layer must not contain `{forbidden}`"
-            );
-        }
-    }
-}
+#[path = "commands_tests.rs"]
+mod tests;

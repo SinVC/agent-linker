@@ -8,10 +8,9 @@
 
 ## 代码入口
 
-- 原 [DbCheckReport/is_ok](../../src/core/db.rs#L91)、[check_database](../../src/core/db.rs#L223)、[CountTable/count_rows](../../src/core/db.rs#L649)，06 后位于 Store。
-- [CommandReport::is_success](../../src/commands/mod.rs#L231)、[run_db](../../src/commands/mod.rs#L288)。
-- [CLI 退出码处理](../../src/cli.rs#L301)、[report_lines](../../src/cli.rs#L582)。
-- [Doctor 数据库检查消费](../../src/core/project_links.rs#L606)，18 后位于独立 Doctor 模块。
+- [DbCheckStatus/DbCheckReport/check_database](../../src/core/store.rs)。
+- [CommandReport::is_success/run_db](../../src/commands/mod.rs)、[CLI 退出码与报告](../../src/cli.rs)、[Doctor 消费](../../src/core/project_links.rs)。
+- [诊断和退出码黑盒测试](../../tests/phase2_blind.rs)、[Doctor 空 Harness 测试](../../src/core/project_links_tests.rs)。
 
 ## 修改清单
 
@@ -32,4 +31,4 @@
 
 ## 执行记录
 
-未执行。完成时填写状态覆盖、退出码和验证结果，再勾选 TODO 11。
+进度、验证结果与未解决问题见[本步进度](../重构编排/steps/11-progress.md)。

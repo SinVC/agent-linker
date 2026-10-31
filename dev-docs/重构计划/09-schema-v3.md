@@ -8,11 +8,10 @@
 
 ## 代码入口
 
-- 原 [LATEST_SCHEMA_VERSION](../../src/core/db.rs#L19)、[migrate_connection](../../src/core/db.rs#L468)、[Seed](../../src/core/db.rs#L563)，06 后位于 Store。
-- [LinkableItem 与单值枚举](../../src/core/linkable.rs#L35)、[默认链接名计算](../../src/core/linkable.rs#L79)、[解析函数](../../src/core/linkable.rs#L248)。
-- [Item 写入](../../src/core/registry.rs#L239)、[查询](../../src/core/registry.rs#L292)、[rename](../../src/core/registry.rs#L123)、[行映射](../../src/core/registry.rs#L588)、[唯一性预查](../../src/core/registry.rs#L641)、[ID 生成](../../src/core/registry.rs#L739)。
-- [Harness 模型](../../src/core/harness.rs#L19)、[存储模型](../../src/core/harness.rs#L90)、[mapping SQL](../../src/core/harness.rs#L330)、[bool 转换](../../src/core/harness.rs#L395)。
-- [timestamp/bool 工具](../../src/core/util.rs#L1)、[Manifest 时间字段](../../src/core/manifest.rs#L27)、[CLI 详情输出](../../src/cli.rs#L918)。
+- [Store::migrate/migrate_connection/migrate_v3/Seed](../../src/core/store.rs)。
+- [LinkableItem/default_link_name](../../src/core/linkable.rs)、[Item CRUD/行映射/随机 ID](../../src/core/registry.rs)、[Harness 模型及 SQL](../../src/core/harness.rs)。
+- [timestamp/format_utc](../../src/core/util.rs)、[Manifest 时间兼容](../../src/core/manifest.rs)、[CLI 详情输出](../../src/cli.rs)。
+- [历史 schema fixture](../../tests/fixtures/schema_v2.sql)、[迁移及唯一性黑盒测试](../../tests/phase2_blind.rs)。
 
 ## 目标 Schema（按裁决原样落实）
 
@@ -108,4 +107,4 @@ CREATE TABLE group_items (
 
 ## 执行记录
 
-未执行。完成时填写迁移映射、fixture 覆盖、修改文件和验证结果，再勾选 TODO 09。
+进度、验证结果与未解决问题见[本步进度](../重构编排/steps/09-progress.md)。

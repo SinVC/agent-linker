@@ -2,23 +2,23 @@
 
 ## 设计目标
 
-使用全局 SQLite 保存配置、Registry、Harness Adapter、Group 和机器级元数据，并与项目 manifest 明确分工。
+使用全局 SQLite 保存 Registry、Harness Adapter、Group 和机器级元数据，并与项目 manifest 明确分工。
 
 ## 职责边界
 
 - 通过 `core::paths` 取得全局数据库路径与解析原因；本模块负责数据库存储。
 - 管理 SQLite 连接和 schema migration。
-- 保存 Harness Adapter、Linkable Item Registry、Group 和用户级偏好。
+- 保存 Harness Adapter、Linkable Item Registry 和 Group。
 - 提供数据库路径、迁移和可写性诊断。
 - 向 command 层暴露结构化 API，不暴露 SQL。
 
 ## 架构约束
 
 - 全局 SQLite 不记录每个项目的实际链接状态。
-- 项目 manifest 不记录全局 Registry 或用户偏好。
+- 项目 manifest 不记录全局 Registry 或 Harness 设置。
 - MVP 不引入项目级配置文件。
 - SQLite schema 必须版本化 migration。
-- Harness 改名仅调整命令和领域术语；schema 保留 `frameworks`、`framework_mappings`、`framework_id`，已有数据、ID、启用标记和自定义映射继续可用。
+- Schema v3 使用 `harnesses`、`harness_mappings`、`linkable_items`、`groups`、`group_items` 五张表；删除 config 表和未消费的预留字段。升级保留全部 ID、成员引用、启用标记、自定义映射与时间。
 
 ## 接口契约
 
@@ -43,15 +43,21 @@ SQLite 保存：
 - Harness Adapter 与映射规则。
 - Skill / Resource / Linkable Item Registry。
 - Group 定义。
-- 来源路径、来源类型、版本、commit、描述等元数据。
-- 用户级偏好设置。
+- 来源路径、来源 file/directory kind、持久化 default_link_name、目标目录及描述。
 
 ## 关键决策
 
-- Windows 优先识别本产品普通安装 Receipt，使用安装根下 `data/`；未识别的安装形态回退到 `%LOCALAPPDATA%`，显式数据目录覆盖仍具有最高优先级。
+- Windows 单用户正常安装通过目录 ACL 让安装发起用户可修改 `data/`、`backups/`，程序目录仍受保护；权限不足时不切换到其他库。
 - 普通安装不默认写入 exe 同目录，因为该位置可能不可写；portable release 通过随包放置 `agent-linker.db` 显式启用同目录数据库。
 - command 层不直接写 SQL。
-- migration 在数据库初始化或显式 `aglink db migrate` 时运行。
+- `store.rs::Store::open_ro` 使用 READ_ONLY 与 query_only；`open_rw` 使用无 CREATE 的 READ_WRITE 与 foreign_keys；两者只接受最新 schema，不迁移或 Seed。仅 `Store::migrate` 创建目录/库、执行迁移与 Seed，CLI 入口是显式 `aglink db migrate`。
+- Registry/Harness 方法共用传入 Store 的连接，SQL 分别位于 registry.rs/harness.rs；每次写命令的读取、写入和返回查询在一个 rusqlite Transaction 中提交，失败回滚。迁移链和 Seed 同样整体提交。
+- v2→v3 同事务表重建、INSERT SELECT、旧表删除/重命名、索引和版本更新；unix 时间字符串转 i64 秒，所有旧 ID 不变，冲突失败完整保留旧库，不自动改名或丢记录。
+- name 跨 Skill/Resource 大小写无关唯一；Skill default_link_name 唯一，Resource 按归一 `(target_dir, default_link_name)` 唯一；Group name 唯一。依赖 SQLite 约束，不做重复唯一性预查。
+- 新 Item/Group 使用 itm_<16hex>/grp_<16hex> 随机 ID。group add/remove 按 item_id 去重；add 已有成员跳过并提示，未知项仍失败，整批写入原子提交。
+- group list 只用单条 LEFT JOIN/COUNT/GROUP BY 查询 id、name、成员数；show/link/unlink 加载完整成员。
+- 查询和项目链接流程对全局库只读，不创建、迁移或 seed；缺库/旧 schema 提示 `db migrate`，新 schema 提示升级程序。`db check` 独立观察 schema，检查五表及 quick_check，再用不带 CREATE 的连接探测可写性；不建库。状态区分 Missing、SchemaMismatch、ReadOnly、LockedBusy、HealthyWritable 与结构/完整性错误 Invalid，只有 HealthyWritable 返回成功。行数不决定健康。
+- 备份只读打开已有源库并生成 SQLite 一致快照，包含已提交 WAL 数据，保留源 schema，不覆盖已有目标；仅正常 Windows 安装默认写入安装根的 `backups/`，其余形态保留数据库同目录默认值。
 - 当前项目链接状态只保存在 `.agents/links.toml`。
 
 ## 验收口径

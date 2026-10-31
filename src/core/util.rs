@@ -1,22 +1,21 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub fn bool_to_i64(value: bool) -> i64 {
-    if value {
-        1
-    } else {
-        0
-    }
-}
-
-pub fn timestamp() -> String {
-    let seconds = SystemTime::now()
+pub fn timestamp() -> i64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs());
-    format!("unix:{seconds}")
+        .map_or(0, |duration| duration.as_secs() as i64)
 }
-
 pub fn timestamp_nanos() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_nanos())
+}
+pub fn format_utc(seconds: i64) -> String {
+    time::OffsetDateTime::from_unix_timestamp(seconds)
+        .ok()
+        .and_then(|date| {
+            date.format(&time::format_description::well_known::Rfc3339)
+                .ok()
+        })
+        .unwrap_or_else(|| seconds.to_string())
 }

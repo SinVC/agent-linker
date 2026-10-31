@@ -8,10 +8,8 @@
 
 ## 代码入口
 
-- [ConfigCommand](../../src/commands/mod.rs#L41)、[CommandReport 的 config 分支](../../src/commands/mod.rs#L182)、[run_config](../../src/commands/mod.rs#L267)。
-- [CliConfigCommand](../../src/cli.rs#L77)、[command_from_cli](../../src/cli.rs#L358)、[report_lines](../../src/cli.rs#L582)。
-- 原 [ConfigEntry/ConfigUnsetReport](../../src/core/db.rs#L103)、[config CRUD](../../src/core/db.rs#L269)、`validate_config_key`，06 后位于 Store。
-- [混合 config/backup 测试](../../src/core/db.rs#L1066)、[只读测试](../../src/core/db.rs#L923)。
+- [CLI command_from_cli/report_lines](../../src/cli.rs)、[Command/CommandReport/run_db](../../src/commands/mod.rs)：已无 config 分支。
+- [历史迁移及 v3 删表](../../src/core/store.rs)、[保留的只读/备份测试](../../src/core/store_tests.rs)、[config 拒绝黑盒测试](../../tests/phase2_blind.rs)。
 
 ## 修改清单
 
@@ -30,4 +28,4 @@
 
 ## 执行记录
 
-未执行。完成时填写删除范围、保留的通用测试及验证结果，再勾选 TODO 08。
+进度、验证结果与未解决问题见[本步进度](../重构编排/steps/08-progress.md)。

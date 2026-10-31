@@ -4,15 +4,13 @@
 
 ## 本步结果与边界
 
-将当前 `db.rs` 收敛为 `core/store.rs`，用统一 Store 分离日常读、日常写、显式初始化与迁移。当前 Schema 仍为 v2，事务边界在 07、v3 在 09、init 接入动态 Harness 在 12；本步不提前修改这些业务行为。
+将当前 `db.rs` 收敛为 `core/store.rs`，用统一 Store 分离日常读、日常写、显式初始化与迁移。本步的独立边界是连接和 Seed 来源；阶段二最终状态已由 07 加入事务、09 升级到 v3、12 接入动态 Harness。
 
 ## 代码入口
 
-- [db.rs 连接与迁移](../../src/core/db.rs#L196)、[open_migrated_connection](../../src/core/db.rs#L397)、[open_readonly_connection](../../src/core/db.rs#L438)、[seed_builtin_harnesses](../../src/core/db.rs#L563)。
-- [RegistryStore](../../src/core/registry.rs#L42)及所有调用 `open_migrated_connection` 的 CRUD 函数。
-- [Harness 读写](../../src/core/harness.rs#L122)、[built_in_claude/default_init_mappings](../../src/core/harness.rs#L50)。
-- [commands 的数据库和 Registry 编排](../../src/commands/mod.rs#L240)、[core 模块导出](../../src/core/mod.rs#L1)。
-- [项目连接入口](../../src/core/project_links.rs#L190)、[只读测试](../../src/core/db.rs#L923)、[Seed 测试](../../src/core/db.rs#L1025)。
+- [Store::open_ro/open_rw/migrate](../../src/core/store.rs)、[Seed](../../src/core/store.rs)与[内置定义 builtin_harnesses](../../src/core/harness.rs)。
+- [Store 的 Registry 方法](../../src/core/registry.rs)、[Harness 方法](../../src/core/harness.rs)、[命令编排](../../src/commands/mod.rs)、[项目只读连接](../../src/core/project_links.rs)。
+- [Store 测试](../../src/core/store_tests.rs)、[独立黑盒验收](../../tests/phase2_blind.rs)、[模块导出](../../src/core/mod.rs)。
 
 ## 修改清单
 
@@ -41,4 +39,4 @@
 
 ## 执行记录
 
-未执行。完成时填写移动后的符号位置、修改文件和验证结果，再勾选 TODO 06。
+进度、验证结果与未解决问题见[本步进度](../重构编排/steps/06-progress.md)。

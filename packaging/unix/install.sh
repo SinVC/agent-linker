@@ -53,6 +53,8 @@ sha256sum -c "$ASSET.sha256"
 mkdir -p "$INSTALL_DIR"
 tar -xzf "$ASSET"
 install -m 0755 aglink "$INSTALL_DIR/aglink"
+"$INSTALL_DIR/aglink" db migrate
+"$INSTALL_DIR/aglink" db check
 
 echo "aglink installed to $INSTALL_DIR/aglink"
 echo "Make sure $INSTALL_DIR is on PATH."

@@ -39,7 +39,7 @@ Windows:
 irm https://github.com/winddxr/agent-linker/releases/latest/download/aglink-installer.ps1 | iex
 ```
 
-Windows 安装器会安装 `aglink.exe`，并在需要时仅对 `WinSymlinksBroker` 服务安装步骤触发 UAC 提权。普通安装的数据目录与可执行文件目录分离；portable zip 则通过同目录 `agent-linker.db` 启用 portable 数据库模式。
+Windows 单用户安装默认使用 `C:\Program Files\aglink`（支持 `-InstallDir`）：`bin/` 保存程序，`data/` 保存数据库及 SQLite 日志，`backups/` 保存默认备份。安装器只对保护目录写入、数据目录赋权及必要的 Broker 安装提权；用户 PATH、旧库快照导入和数据库初始化由外层用户进程执行。已有旧默认库会在新目标尚不存在时导入并保留原库；升级保留数据与备份。portable zip 携带已初始化的同目录数据库。
 
 卸载:
 
@@ -47,7 +47,7 @@ Windows 安装器会安装 `aglink.exe`，并在需要时仅对 `WinSymlinksBrok
 irm https://github.com/winddxr/agent-linker/releases/latest/download/aglink-uninstall.ps1 | iex
 ```
 
-默认卸载保留数据库和 Registry 数据；需要删除用户数据时使用发布资产中的卸载脚本并传入 purge 选项。
+默认卸载保留数据库、备份及共享 Broker 文件与维护脚本；`-Purge` 清理本安装的已知数据库文件与默认备份，`-RemoveBroker` 单独控制服务卸载。自定义数据覆盖目录只清理已知 SQLite 文件，保留未知内容。
 
 ### 2. 从源码安装
 
@@ -55,6 +55,7 @@ irm https://github.com/winddxr/agent-linker/releases/latest/download/aglink-unin
 
 ```bash
 cargo install --path .
+aglink db migrate
 ```
 *(注：后续发布到 crates.io 后可通过 `cargo install aglink` 安装)*
 
@@ -73,7 +74,7 @@ Windows Release 包会携带固定版本的 `WinSymlinksBroker` 运行时。推�
 
 ## 🚀 Quick Start (快速开始)
 
-初始化项目结构与链接状态清单，查看 Harness 适配定义：
+源码安装或手工解压后，先运行 `aglink db migrate`；安装脚本和 portable 包已完成初始化。然后初始化项目并查看 Harness 定义：
 
 ```bash
 aglink init
@@ -82,6 +83,8 @@ aglink harness show claude
 ```
 
 > **注意**: 完整命令使用方法与用途分类，请查阅详细的 [CLI Command Reference (命令行指南)](CLI_REFERENCE.md)。同时，也可通过 `aglink --help` 随时获取内建帮助。
+
+日常使用普通用户身份。Agent 的持久化写操作默认经宿主授权在沙箱外执行；已初始化数据库的只读查询和链接 dry-run 可在沙箱内执行。权限不足时 CLI 明确失败，不自行解除沙箱。正常 Windows 安装从有效 receipt 和 exe 布局定位数据库；显式设置不同的 `AGLINK_DATA_DIR` 会主动切换数据配置。其他安装形态跨入口使用时应显式统一该目录。`aglink db path` 可检查实际目标；普通读写均不会自动建库或迁移；显式 `aglink db migrate` 升级到 Schema v3，保留旧 ID 和引用。`db check` 验证五表和 SQLite 完整性，不健康返回非零。
 
 ## 📖 Architecture & Contract (架构与契约)
 

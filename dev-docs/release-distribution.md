@@ -49,21 +49,37 @@ Do not ask users to build the broker from source as part of normal install.
 
 ### Normal Install
 
-Normal installs place the executable under the user's application install
-directory and keep data in the platform data directory:
+Normal Windows installs use a single-user installation root (default
+`ProgramW6432/aglink`, falling back to `ProgramFiles/aglink`; `-InstallDir` overrides it).
+`bin/` contains the CLI, `data/` contains SQLite and its sidecars, and `backups/`
+contains default backups. Existing `broker/`, `scripts/`, and the receipt remain.
+Other platforms keep their data paths:
 
-- Windows: `%LOCALAPPDATA%\agent-linker\agent-linker.db`
+- Windows normal install: `<installRoot>\data\agent-linker.db`; unrecognized layouts retain the `%LOCALAPPDATA%\agent-linker` fallback.
 - Linux: `$XDG_DATA_HOME/agent-linker/agent-linker.db`
 - Linux fallback: `~/.local/share/agent-linker/agent-linker.db`
 - macOS: `~/Library/Application Support/agent-linker/agent-linker.db`
 
-On Windows, the installer may elevate only the broker service installation
-step. The whole installer should not require administrator rights.
+The ordinary Windows outer process captures the initiating SID and old default
+database, downloads and verifies the archive, and launches a disk-backed helper.
+Only protected installation updates, receipt, ACLs, and necessary Broker setup
+are elevated. Writable custom roots with an available Broker (or `-NoBroker`)
+need no UAC. Grant that SID inherited Modify on `data/` and `backups/` only.
+The outer process imports a consistent snapshot of an existing old default database
+only when the target is absent, preserves the source, then runs `db migrate` and
+`db check` with checked exit codes. It temporarily sets `AGLINK_DATA_DIR` to the
+explicit source/target and restores it in `finally`; user overrides are not changed.
+Existing targets are validated and never overwritten. `doctor` is diagnostic only.
+An already-elevated outer process is not evidence of ordinary-user ACL correctness.
+Reuse an installed Broker without replacing files that its service may be using.
 
 ### Portable Install
 
-Portable Windows archives include `agent-linker.db` next to `aglink.exe`.
+Portable Windows archives include an initialized `agent-linker.db` next to `aglink.exe`.
 This enables the existing portable database path resolution.
+Packaging explicitly sets the staging data directory for `db migrate`, producing a schema v3 database usable by the first ordinary query. Normal install/upgrade runs explicit migrate and check; a nonhealthy check returns nonzero and stops installation success. Unix
+installers initialize and check the database; source/manual installs must run
+`aglink db migrate` before queries.
 
 Portable mode controls the Agent Linker database location only. Windows
 symlink operations still require the machine-level `WinSymlinksBroker` service.
@@ -72,9 +88,12 @@ symlink operations still require the machine-level `WinSymlinksBroker` service.
 
 Uninstall scripts support two levels:
 
-- Default uninstall removes installed binaries, installer-owned files, PATH
-  entries, and install receipt data. User databases and registry data are kept.
-- Purge uninstall additionally removes Agent Linker data directories.
+- Default uninstall removes the CLI and user PATH entry, retaining data, backups,
+  shared Broker files, receipt, and maintenance scripts for subsequent removal.
+  Protected deletion uses the helper; never recursively delete the installation root.
+- Purge additionally removes known SQLite files (including `-journal`, `-wal`,
+  `-shm`) from this installation's `data/` and generated default backup files
+  from `backups/`. Unknown content is retained.
 
 Broker removal is separate because the broker is a machine-level service and
 may be shared by other tools:
@@ -82,10 +101,8 @@ may be shared by other tools:
 - Default uninstall does not remove `WinSymlinksBroker`.
 - `-RemoveBroker` / `--remove-broker` removes it with elevation.
 
-When `AGLINK_DATA_DIR` is set, purge must delete it only when an ownership
-marker and install receipt prove the directory is managed by this installer.
-Otherwise it may remove only known Agent Linker files or leave the directory
-for manual review.
+When `AGLINK_DATA_DIR` is set, purge removes only known SQLite files, never
+recursively deletes that directory, and does not assume an ownership marker exists.
 
 ## Script Source And Distribution
 

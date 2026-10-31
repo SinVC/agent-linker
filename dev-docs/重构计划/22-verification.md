@@ -10,7 +10,7 @@
 
 - [TestDir](../../src/core/test_support.rs#L1)、[Symlink 单元/平台测试](../../src/core/symlink.rs#L1007)。
 - [Manifest 测试](../../src/core/manifest.rs#L674)、[Registry 测试](../../src/core/registry.rs#L747)、[项目用例测试](../../src/core/project_links.rs#L1208)。
-- 原 [存储迁移测试](../../src/core/db.rs#L1025)由 06/09 迁至 Store；[Doctor 原测试](../../src/core/project_links.rs#L1842)由 18 迁至 Doctor。
+- 原 [存储迁移测试](../../src/core/store.rs)由 06/09 迁至 Store；[Doctor 原测试](../../src/core/project_links.rs#L1842)由 18 迁至 Doctor。
 - [CLI 测试](../../src/cli.rs#L1090)、[Windows 安装 fixture](../../packaging/windows/test-install.ps1#L1)、[Unix 安装 fixture](../../packaging/unix/test-install.sh#L1)。
 - [已发现的 Cargo 配置](../../Cargo.toml#L1)、[现有 release 验证命令](../../.github/workflows/release.yml#L36)。
 

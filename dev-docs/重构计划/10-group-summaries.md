@@ -8,9 +8,9 @@
 
 ## 代码入口
 
-- [list_groups_with_connection](../../src/core/registry.rs#L403)、[group_items_with_connection](../../src/core/registry.rs#L565)、[Group](../../src/core/registry.rs#L33)。
-- [CommandReport::GroupList](../../src/commands/mod.rs#L217)、[run_group](../../src/commands/mod.rs#L398)。
-- [report_lines](../../src/cli.rs#L582)、[group_details](../../src/cli.rs#L944)。
+- [GroupSummary/Store::list_group_summaries](../../src/core/registry.rs)。
+- [CommandReport::GroupList/run_group](../../src/commands/mod.rs)、[CLI group list 输出](../../src/cli.rs)。
+- [空组、多组及成员变化黑盒验收](../../tests/phase2_blind.rs)。
 
 ## 修改清单
 
@@ -36,4 +36,4 @@
 
 ## 执行记录
 
-未执行。完成时填写修改文件、摘要查询验证和结果，再勾选 TODO 10。
+进度、验证结果与未解决问题见[本步进度](../重构编排/steps/10-progress.md)。

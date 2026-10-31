@@ -47,30 +47,18 @@ function Add-UserPath {
     }
 }
 
-function Invoke-ElevatedBrokerInstall {
-    param([string] $ScriptPath, [string] $BrokerExe)
-
-    $arguments = @(
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        "`"$ScriptPath`"",
-        "-BrokerExe",
-        "`"$BrokerExe`""
-    ) -join " "
-
-    $process = Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -Verb RunAs -Wait -PassThru
-    if ($process.ExitCode -ne 0) {
-        throw "Broker installation failed with exit code $($process.ExitCode)"
-    }
+$userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Warning 'Installer is already elevated; successful initialization does not verify ordinary-user data permissions.'
 }
-
+$legacyDb = Join-Path $env:LOCALAPPDATA "agent-linker\agent-linker.db"
 $tag = Get-ReleaseTag -RepoName $Repo -RequestedVersion $Version
 $plainVersion = if ($tag.StartsWith("v")) { $tag.Substring(1) } else { $tag }
 
 if ([string]::IsNullOrWhiteSpace($InstallDir)) {
-    $InstallDir = Join-Path $env:LOCALAPPDATA "Programs\aglink"
+    $programRoot = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
+    $InstallDir = Join-Path $programRoot "aglink"
 }
 
 $installRoot = [System.IO.Path]::GetFullPath($InstallDir)
@@ -100,39 +88,68 @@ try {
 
     Expand-Archive -LiteralPath $archivePath -DestinationPath $extractPath -Force
 
-    New-Item -ItemType Directory -Force -Path $binDir, $brokerDir, $scriptDir | Out-Null
-    Copy-Item -LiteralPath (Join-Path $extractPath "aglink.exe") -Destination (Join-Path $binDir "aglink.exe") -Force
-    Copy-Item -Path (Join-Path $extractPath "broker\*") -Destination $brokerDir -Recurse -Force
-    Copy-Item -Path (Join-Path $extractPath "scripts\*") -Destination $scriptDir -Recurse -Force
-
-    if (-not $NoPath) {
-        Add-UserPath -PathToAdd $binDir
+    # The outer process captures the initiating identity and never changes global data overrides.
+    $request = @{
+        operation = 'install'; install_dir = $installRoot; source = $extractPath
+        user_sid = $userSid; no_broker = [bool]$NoBroker; sha256 = $actual
     }
-
-    $receiptPath = Join-Path $installRoot "install-receipt.json"
-    $sourceReceipt = Get-Content -LiteralPath (Join-Path $extractPath "install-receipt.json") -Raw | ConvertFrom-Json
-    $sourceReceipt.installed_by = "aglink-installer.ps1"
-    $sourceReceipt.install_dir = $installRoot
-    $sourceReceipt.installed_at = (Get-Date).ToUniversalTime().ToString("o")
-    $sourceReceipt |
-        Add-Member -NotePropertyName "archive_sha256" -NotePropertyValue $actual -Force
-    $sourceReceipt |
-        ConvertTo-Json -Depth 8 |
-        Set-Content -LiteralPath $receiptPath -Encoding UTF8
-
-    if (-not $NoBroker) {
-        $service = Get-Service -Name "WinSymlinksBroker" -ErrorAction SilentlyContinue
-        if (-not $service -or $service.Status -ne "Running") {
-            Invoke-ElevatedBrokerInstall `
-                -ScriptPath (Join-Path $scriptDir "install-broker.ps1") `
-                -BrokerExe (Join-Path $brokerDir "win-symlinks-broker.exe")
+    $requestPath = Join-Path $tempRoot 'request.json'
+    $request | ConvertTo-Json | Set-Content -LiteralPath $requestPath -Encoding UTF8
+    $helper = Join-Path $extractPath 'scripts\maintain-install.ps1'
+    $needsElevation = $false
+    try {
+        New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
+        $probe = Join-Path $installRoot ([Guid]::NewGuid().ToString('N') + '.probe')
+        [IO.File]::WriteAllText($probe, '')
+        Remove-Item -LiteralPath $probe
+        foreach ($directory in @($binDir, $brokerDir, $scriptDir)) {
+            if (Test-Path -LiteralPath $directory) {
+                $probe = Join-Path $directory ([Guid]::NewGuid().ToString('N') + '.probe')
+                [IO.File]::WriteAllText($probe, '')
+                Remove-Item -LiteralPath $probe
+            }
         }
+    } catch [System.UnauthorizedAccessException] { $needsElevation = $true }
+    $service = Get-Service -Name 'WinSymlinksBroker' -ErrorAction SilentlyContinue
+    if (-not $NoBroker -and (-not $service -or $service.Status -ne 'Running')) { $needsElevation = $true }
+    $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$helper`" -RequestPath `"$requestPath`""
+    if ($needsElevation) {
+        $process = Start-Process powershell.exe -ArgumentList $arguments -Verb RunAs -Wait -PassThru -WindowStyle Hidden
+    } else {
+        $process = Start-Process powershell.exe -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden
     }
+    if ($process.ExitCode -ne 0) { throw "Installation helper failed: $($process.ExitCode)" }
 
-    & (Join-Path $binDir "aglink.exe") db migrate
-    & (Join-Path $binDir "aglink.exe") --verbose doctor
+    $previousDataDir = $env:AGLINK_DATA_DIR
+    $exe = Join-Path $binDir 'aglink.exe'
+    $dataDir = Join-Path $installRoot 'data'
+    $targetDb = Join-Path $dataDir 'agent-linker.db'
+    try {
+        # An existing target is validated before any migration. Never overwrite a damaged target.
+        if (Test-Path -LiteralPath $targetDb) {
+            $env:AGLINK_DATA_DIR = $dataDir
+            & $exe db backup (Join-Path $tempRoot 'target-validation.db')
+            if ($LASTEXITCODE -ne 0) { throw 'Existing target database failed validation' }
+        } elseif (Test-Path -LiteralPath $legacyDb -PathType Leaf) {
+            $env:AGLINK_DATA_DIR = Split-Path -Parent $legacyDb
+            & $exe db backup $targetDb
+            if ($LASTEXITCODE -ne 0) { throw 'Legacy database snapshot failed' }
+        }
+        $env:AGLINK_DATA_DIR = $dataDir
+        & $exe db migrate
+        if ($LASTEXITCODE -ne 0) { throw 'Database initialization failed' }
+        & $exe db check
+        if ($LASTEXITCODE -ne 0) { throw 'Database check failed' }
+        & $exe --verbose doctor
+        # doctor also diagnoses the current project and optional Broker; it is informational here.
+        $global:LASTEXITCODE = 0
+    } finally { $env:AGLINK_DATA_DIR = $previousDataDir }
+    if (-not $NoPath) { Add-UserPath -PathToAdd $binDir }
 } finally {
     if (Test-Path -LiteralPath $tempRoot) {
-        Remove-Item -LiteralPath $tempRoot -Recurse -Force
+        $resolvedTemp = [IO.Path]::GetFullPath($tempRoot)
+        $tempParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+        if (-not $resolvedTemp.StartsWith($tempParent, [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid installer temporary path' }
+        Remove-Item -LiteralPath $resolvedTemp -Recurse -Force
     }
 }

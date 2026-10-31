@@ -1,30 +1,16 @@
-//! Agent harness adapter entry point.
-//! SQL identifiers retain their legacy `framework*` names for database compatibility.
-
+//! Harness definitions, mappings, and Store business operations.
+use crate::core::{
+    error::{Error, Result},
+    paths::{resolve_managed_project_path, validate_managed_relative_path},
+    store::Store,
+    symlink::LinkKind,
+    util::{timestamp, timestamp_nanos},
+};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::{
     path::{Path, PathBuf},
     str::FromStr,
 };
-
-use rusqlite::{params, OptionalExtension};
-
-use crate::core::{
-    db::open_migrated_connection,
-    error::{Error, Result},
-    paths::{resolve_managed_project_path, validate_managed_relative_path, DbPathResolution},
-    symlink::LinkKind,
-    util::{bool_to_i64, timestamp, timestamp_nanos},
-};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HarnessDefinition {
-    pub id: String,
-    pub name: String,
-    pub display_name: String,
-    pub built_in: bool,
-    pub enabled_by_default: bool,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HarnessMapping {
     pub id: String,
@@ -48,55 +34,15 @@ impl HarnessMapping {
     }
 }
 
-pub fn built_in_claude() -> HarnessDefinition {
-    HarnessDefinition {
-        id: "claude".to_string(),
-        name: "claude".to_string(),
-        display_name: "Claude Code".to_string(),
-        built_in: true,
-        enabled_by_default: true,
-    }
-}
-
-pub fn default_init_mappings() -> Vec<HarnessMapping> {
-    let claude = built_in_claude();
-
-    vec![
-        HarnessMapping {
-            id: "init:claude:agents-md".to_string(),
-            harness_id: claude.id.clone(),
-            harness_name: claude.name.clone(),
-            item_id: "project:agents-md".to_string(),
-            item_name: "AGENTS.md".to_string(),
-            source_path: PathBuf::from("AGENTS.md"),
-            link_path: PathBuf::from("CLAUDE.md"),
-            link_kind: LinkKind::File,
-            required: true,
-        },
-        HarnessMapping {
-            id: "init:claude:skills-dir".to_string(),
-            harness_id: claude.id,
-            harness_name: claude.name,
-            item_id: "project:skills-dir".to_string(),
-            item_name: ".agents/skills".to_string(),
-            source_path: PathBuf::from(".agents").join("skills"),
-            link_path: PathBuf::from(".claude").join("skills"),
-            link_kind: LinkKind::Directory,
-            required: true,
-        },
-    ]
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredHarness {
     pub id: String,
     pub name: String,
     pub display_name: String,
     pub built_in: bool,
-    pub enabled_by_default: bool,
     pub enabled: bool,
-    pub created_at: String,
-    pub updated_at: String,
+    pub created_at: i64,
+    pub updated_at: i64,
     pub mappings: Vec<StoredHarnessMapping>,
 }
 
@@ -108,8 +54,8 @@ pub struct StoredHarnessMapping {
     pub link_path: PathBuf,
     pub link_kind: LinkKind,
     pub required: bool,
-    pub created_at: String,
-    pub updated_at: String,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,214 +66,168 @@ pub struct AddHarnessMapping {
     pub link_kind: LinkKind,
 }
 
-pub fn list_harnesses(resolution: &DbPathResolution) -> Result<Vec<StoredHarness>> {
-    let connection = open_migrated_connection(resolution)?;
-    let mut statement = connection.prepare(
-        r#"
-        SELECT id, name, display_name, built_in, enabled_by_default, enabled, created_at, updated_at
-        FROM frameworks
-        ORDER BY name
-        "#,
-    )?;
-
-    let rows = statement.query_map([], |row| {
-        Ok(StoredHarness {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            display_name: row.get(2)?,
-            built_in: int_to_bool(row.get::<_, i64>(3)?),
-            enabled_by_default: int_to_bool(row.get::<_, i64>(4)?),
-            enabled: int_to_bool(row.get::<_, i64>(5)?),
-            created_at: row.get(6)?,
-            updated_at: row.get(7)?,
-            mappings: Vec::new(),
-        })
-    })?;
-
-    let mut harnesses = Vec::new();
-    for row in rows {
-        let mut harness = row?;
-        harness.mappings = list_harness_mappings(&connection, Some(&harness.id))?;
-        harnesses.push(harness);
-    }
-
-    Ok(harnesses)
+pub fn builtin_harnesses() -> Vec<StoredHarness> {
+    let id = "claude".to_string();
+    let mappings = [
+        (
+            "init:claude:agents-md",
+            "AGENTS.md",
+            "CLAUDE.md",
+            LinkKind::File,
+        ),
+        (
+            "init:claude:skills-dir",
+            ".agents/skills",
+            ".claude/skills",
+            LinkKind::Directory,
+        ),
+    ]
+    .into_iter()
+    .map(|(mapping_id, source, link, kind)| StoredHarnessMapping {
+        id: mapping_id.to_string(),
+        harness_id: id.clone(),
+        source_path: source.into(),
+        link_path: link.into(),
+        link_kind: kind,
+        required: true,
+        created_at: 0,
+        updated_at: 0,
+    })
+    .collect();
+    vec![StoredHarness {
+        id,
+        name: "claude".to_string(),
+        display_name: "Claude Code".to_string(),
+        built_in: true,
+        enabled: true,
+        created_at: 0,
+        updated_at: 0,
+        mappings,
+    }]
 }
-
-pub fn show_harness(resolution: &DbPathResolution, harness_id: &str) -> Result<StoredHarness> {
-    let connection = open_migrated_connection(resolution)?;
-    let mut harness = connection
-        .query_row(
-            r#"
-            SELECT id, name, display_name, built_in, enabled_by_default, enabled, created_at, updated_at
-            FROM frameworks
-            WHERE id = ?1 OR name = ?1
-            "#,
-            params![harness_id],
-            |row| {
-                Ok(StoredHarness {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    display_name: row.get(2)?,
-                    built_in: int_to_bool(row.get::<_, i64>(3)?),
-                    enabled_by_default: int_to_bool(row.get::<_, i64>(4)?),
-                    enabled: int_to_bool(row.get::<_, i64>(5)?),
-                    created_at: row.get(6)?,
-                    updated_at: row.get(7)?,
-                    mappings: Vec::new(),
-                })
-            },
-        )
-        .optional()?
-        .ok_or_else(|| Error::database(format!("unknown harness `{harness_id}`")))?;
-
-    harness.mappings = list_harness_mappings(&connection, Some(&harness.id))?;
+impl StoredHarnessMapping {
+    pub fn for_project(&self, harness_name: &str) -> HarnessMapping {
+        let item_id = match self.id.as_str() {
+            "init:claude:agents-md" => "project:agents-md".to_string(),
+            "init:claude:skills-dir" => "project:skills-dir".to_string(),
+            _ => format!("harness:{}", self.id),
+        };
+        HarnessMapping {
+            id: self.id.clone(),
+            harness_id: self.harness_id.clone(),
+            harness_name: harness_name.to_string(),
+            item_id,
+            item_name: self.source_path.to_string_lossy().into_owned(),
+            source_path: self.source_path.clone(),
+            link_path: self.link_path.clone(),
+            link_kind: self.link_kind,
+            required: self.required,
+        }
+    }
+}
+pub fn default_init_mappings() -> Vec<HarnessMapping> {
+    builtin_harnesses()
+        .into_iter()
+        .filter(|h| h.enabled)
+        .flat_map(|h| h.mappings.into_iter().map(move |m| m.for_project(&h.name)))
+        .collect()
+}
+impl Store {
+    pub fn list_harnesses(&self) -> Result<Vec<StoredHarness>> {
+        let connection = self.connection();
+        let mut statement=connection.prepare("SELECT id,name,display_name,built_in,enabled,created_at,updated_at FROM harnesses ORDER BY name")?;
+        let mut harnesses = statement
+            .query_map([], harness_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for harness in &mut harnesses {
+            harness.mappings = list_harness_mappings(connection, Some(&harness.id))?;
+        }
+        Ok(harnesses)
+    }
+    pub fn show_harness(&self, identifier: &str) -> Result<StoredHarness> {
+        show_harness_with_connection(self.connection(), identifier)
+    }
+    pub fn enable_harness(&self, identifier: &str) -> Result<()> {
+        self.set_harness_enabled(identifier, true)
+    }
+    pub fn disable_harness(&self, identifier: &str) -> Result<()> {
+        self.set_harness_enabled(identifier, false)
+    }
+    fn set_harness_enabled(&self, identifier: &str, enabled: bool) -> Result<()> {
+        self.write(|connection| {
+            let changed = connection.execute(
+                "UPDATE harnesses SET enabled=?2,updated_at=?3 WHERE id=?1 OR name=?1",
+                params![identifier, enabled, timestamp()],
+            )?;
+            if changed == 0 {
+                return Err(Error::database(format!("unknown harness '{identifier}'")));
+            }
+            Ok(())
+        })
+    }
+    pub fn list_all_mappings(&self) -> Result<Vec<StoredHarnessMapping>> {
+        list_harness_mappings(self.connection(), None)
+    }
+    pub fn list_mappings_for_harness(&self, identifier: &str) -> Result<Vec<StoredHarnessMapping>> {
+        Ok(self.show_harness(identifier)?.mappings)
+    }
+    pub fn enabled_harness_mappings(&self) -> Result<Vec<StoredHarnessMapping>> {
+        let mut statement=self.connection().prepare("SELECT m.id,m.harness_id,m.source_path,m.link_path,m.link_kind,m.required,m.created_at,m.updated_at FROM harness_mappings m JOIN harnesses h ON h.id=m.harness_id WHERE h.enabled=1 ORDER BY h.name,m.id")?;
+        let rows = statement
+            .query_map([], stored_mapping_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+    pub fn add_mapping(&self, request: AddHarnessMapping) -> Result<StoredHarnessMapping> {
+        self.write(|connection| {
+   validate_mapping_path(&request.source_path,"source path")?;
+   validate_mapping_path(&request.link_path,"link path")?;
+   let harness_id=find_harness_id(connection,&request.harness)?;
+   let source_text=path_to_db_text(&request.source_path,"source path")?;
+   let link_text=path_to_db_text(&request.link_path,"link path")?;
+   let id=format!("mapping:{}:{}",harness_id,timestamp_nanos());
+   let now=timestamp();
+   connection.execute("INSERT INTO harness_mappings(id,harness_id,source_path,link_path,link_kind,required,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,0,?6,?6)",params![id,harness_id,source_text,link_text,request.link_kind.to_string(),now])?;
+   find_mapping_by_id(connection,&id)
+  })
+    }
+    pub fn remove_mapping(&self, harness: &str, link_path: &Path) -> Result<StoredHarnessMapping> {
+        self.write(|connection| {
+            validate_mapping_path(link_path, "link path")?;
+            let harness_id = find_harness_id(connection, harness)?;
+            let link_text = path_to_db_text(link_path, "link path")?;
+            let mapping = find_mapping_by_harness_and_link(connection, &harness_id, &link_text)?;
+            if mapping.required {
+                return Err(Error::invalid_arguments(format!(
+                    "required harness mapping '{}' cannot be removed",
+                    mapping.id
+                )));
+            }
+            connection.execute("DELETE FROM harness_mappings WHERE id=?1", [&mapping.id])?;
+            Ok(mapping)
+        })
+    }
+}
+fn harness_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredHarness> {
+    Ok(StoredHarness {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        display_name: row.get(2)?,
+        built_in: row.get(3)?,
+        enabled: row.get(4)?,
+        created_at: row.get(5)?,
+        updated_at: row.get(6)?,
+        mappings: Vec::new(),
+    })
+}
+fn show_harness_with_connection(
+    connection: &Connection,
+    identifier: &str,
+) -> Result<StoredHarness> {
+    let mut harness=connection.query_row("SELECT id,name,display_name,built_in,enabled,created_at,updated_at FROM harnesses WHERE id=?1 OR name=?1",[identifier],harness_from_row).optional()?.ok_or_else(||Error::database(format!("unknown harness '{identifier}'")))?;
+    harness.mappings = list_harness_mappings(connection, Some(&harness.id))?;
     Ok(harness)
 }
-
-pub fn enable_harness(resolution: &DbPathResolution, harness_id: &str) -> Result<()> {
-    set_harness_enabled(resolution, harness_id, true)
-}
-
-pub fn disable_harness(resolution: &DbPathResolution, harness_id: &str) -> Result<()> {
-    set_harness_enabled(resolution, harness_id, false)
-}
-
-pub fn list_all_mappings(resolution: &DbPathResolution) -> Result<Vec<StoredHarnessMapping>> {
-    let connection = open_migrated_connection(resolution)?;
-    list_harness_mappings(&connection, None)
-}
-
-pub fn list_mappings_for_harness(
-    resolution: &DbPathResolution,
-    harness_id: &str,
-) -> Result<Vec<StoredHarnessMapping>> {
-    let harness = show_harness(resolution, harness_id)?;
-    Ok(harness.mappings)
-}
-
-pub fn enabled_harness_mappings(
-    resolution: &DbPathResolution,
-) -> Result<Vec<StoredHarnessMapping>> {
-    let connection = open_migrated_connection(resolution)?;
-    let mut statement = connection.prepare(
-        r#"
-        SELECT m.id, m.framework_id, m.source_path, m.link_path, m.link_kind, m.required,
-               m.created_at, m.updated_at
-        FROM framework_mappings m
-        JOIN frameworks f ON f.id = m.framework_id
-        WHERE f.enabled = 1
-        ORDER BY f.name, m.id
-        "#,
-    )?;
-
-    let rows = statement.query_map([], stored_mapping_from_row)?;
-    let mut mappings = Vec::new();
-    for row in rows {
-        mappings.push(row?);
-    }
-    Ok(mappings)
-}
-
-pub fn add_mapping(
-    resolution: &DbPathResolution,
-    request: AddHarnessMapping,
-) -> Result<StoredHarnessMapping> {
-    validate_mapping_path(&request.source_path, "source path")?;
-    validate_mapping_path(&request.link_path, "link path")?;
-    let connection = open_migrated_connection(resolution)?;
-    let harness_id = find_harness_id(&connection, &request.harness)?;
-    let source_text = path_to_db_text(&request.source_path, "source path")?;
-    let link_text = path_to_db_text(&request.link_path, "link path")?;
-
-    let existing: Option<String> = connection
-        .query_row(
-            r#"
-            SELECT id
-            FROM framework_mappings
-            WHERE framework_id = ?1 AND link_path = ?2
-            "#,
-            params![harness_id, link_text],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if existing.is_some() {
-        return Err(Error::invalid_arguments(format!(
-            "harness `{}` already has mapping for `{}`",
-            request.harness,
-            request.link_path.display()
-        )));
-    }
-
-    let id = format!("mapping:{}:{}", harness_id, timestamp_nanos());
-    let now = timestamp();
-    connection.execute(
-        r#"
-        INSERT INTO framework_mappings
-            (id, framework_id, source_path, link_path, link_kind, required, created_at, updated_at)
-        VALUES
-            (?1, ?2, ?3, ?4, ?5, 0, ?6, ?6)
-        "#,
-        params![
-            id,
-            harness_id,
-            source_text,
-            link_text,
-            request.link_kind.to_string(),
-            now,
-        ],
-    )?;
-
-    find_mapping_by_id(&connection, &id)
-}
-
-pub fn remove_mapping(
-    resolution: &DbPathResolution,
-    harness: &str,
-    link_path: &Path,
-) -> Result<StoredHarnessMapping> {
-    validate_mapping_path(link_path, "link path")?;
-    let connection = open_migrated_connection(resolution)?;
-    let harness_id = find_harness_id(&connection, harness)?;
-    let link_text = path_to_db_text(link_path, "link path")?;
-    let mapping = find_mapping_by_harness_and_link(&connection, &harness_id, &link_text)?;
-
-    if mapping.required {
-        return Err(Error::invalid_arguments(format!(
-            "required harness mapping `{}` cannot be removed",
-            mapping.id
-        )));
-    }
-
-    connection.execute(
-        "DELETE FROM framework_mappings WHERE id = ?1",
-        params![&mapping.id],
-    )?;
-    Ok(mapping)
-}
-
-fn set_harness_enabled(
-    resolution: &DbPathResolution,
-    harness_id: &str,
-    enabled: bool,
-) -> Result<()> {
-    let connection = open_migrated_connection(resolution)?;
-    let changed = connection.execute(
-        r#"
-        UPDATE frameworks
-        SET enabled = ?2, updated_at = ?3
-        WHERE id = ?1 OR name = ?1
-        "#,
-        params![harness_id, bool_to_i64(enabled), timestamp()],
-    )?;
-
-    if changed == 0 {
-        return Err(Error::database(format!("unknown harness `{harness_id}`")));
-    }
-
-    Ok(())
-}
-
 fn list_harness_mappings(
     connection: &rusqlite::Connection,
     harness_id: Option<&str>,
@@ -335,18 +235,18 @@ fn list_harness_mappings(
     let (sql, bind_harness) = match harness_id {
         Some(harness_id) => (
             r#"
-            SELECT id, framework_id, source_path, link_path, link_kind, required, created_at, updated_at
-            FROM framework_mappings
-            WHERE framework_id = ?1
+            SELECT id, harness_id, source_path, link_path, link_kind, required, created_at, updated_at
+            FROM harness_mappings
+            WHERE harness_id = ?1
             ORDER BY id
             "#,
             Some(harness_id),
         ),
         None => (
             r#"
-            SELECT id, framework_id, source_path, link_path, link_kind, required, created_at, updated_at
-            FROM framework_mappings
-            ORDER BY framework_id, id
+            SELECT id, harness_id, source_path, link_path, link_kind, required, created_at, updated_at
+            FROM harness_mappings
+            ORDER BY harness_id, id
             "#,
             None,
         ),
@@ -387,20 +287,16 @@ fn stored_mapping_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredHa
                 Box::new(error),
             )
         })?,
-        required: int_to_bool(row.get::<_, i64>(5)?),
+        required: row.get(5)?,
         created_at: row.get(6)?,
         updated_at: row.get(7)?,
     })
 }
 
-fn int_to_bool(value: i64) -> bool {
-    value != 0
-}
-
 fn find_harness_id(connection: &rusqlite::Connection, harness: &str) -> Result<String> {
     connection
         .query_row(
-            "SELECT id FROM frameworks WHERE id = ?1 OR name = ?1",
+            "SELECT id FROM harnesses WHERE id = ?1 OR name = ?1",
             params![harness],
             |row| row.get(0),
         )
@@ -412,8 +308,8 @@ fn find_mapping_by_id(connection: &rusqlite::Connection, id: &str) -> Result<Sto
     connection
         .query_row(
             r#"
-            SELECT id, framework_id, source_path, link_path, link_kind, required, created_at, updated_at
-            FROM framework_mappings
+            SELECT id, harness_id, source_path, link_path, link_kind, required, created_at, updated_at
+            FROM harness_mappings
             WHERE id = ?1
             "#,
             params![id],
@@ -430,9 +326,9 @@ fn find_mapping_by_harness_and_link(
     connection
         .query_row(
             r#"
-            SELECT id, framework_id, source_path, link_path, link_kind, required, created_at, updated_at
-            FROM framework_mappings
-            WHERE framework_id = ?1 AND link_path = ?2
+            SELECT id, harness_id, source_path, link_path, link_kind, required, created_at, updated_at
+            FROM harness_mappings
+            WHERE harness_id = ?1 AND link_path = ?2
             "#,
             params![harness_id, link_path],
             stored_mapping_from_row,
@@ -459,125 +355,5 @@ fn path_to_db_text(path: &Path, label: &str) -> Result<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        add_mapping, default_init_mappings, disable_harness, enable_harness,
-        enabled_harness_mappings, list_all_mappings, list_harnesses, remove_mapping, show_harness,
-        AddHarnessMapping,
-    };
-    use crate::core::symlink::LinkKind;
-    use crate::core::{
-        db::migrate_database,
-        paths::{DbPathReason, DbPathResolution},
-    };
-    use std::fs;
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[test]
-    fn claude_init_mappings_are_built_in_defaults() {
-        let mappings = default_init_mappings();
-
-        assert_eq!(mappings.len(), 2);
-        assert_eq!(mappings[0].harness_name, "claude");
-        assert_eq!(mappings[0].source_path, PathBuf::from("AGENTS.md"));
-        assert_eq!(mappings[0].link_path, PathBuf::from("CLAUDE.md"));
-        assert_eq!(mappings[0].link_kind, LinkKind::File);
-        assert_eq!(
-            mappings[1].source_path,
-            PathBuf::from(".agents").join("skills")
-        );
-        assert_eq!(
-            mappings[1].link_path,
-            PathBuf::from(".claude").join("skills")
-        );
-        assert_eq!(mappings[1].link_kind, LinkKind::Directory);
-    }
-
-    #[test]
-    fn harness_api_lists_shows_toggles_and_returns_mappings() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let temp_dir = std::env::temp_dir().join(format!(
-            "agent-linker-harness-test-{}-{unique}",
-            std::process::id()
-        ));
-        fs::create_dir(&temp_dir).unwrap();
-        let resolution = DbPathResolution {
-            path: temp_dir.join("agent-linker.db"),
-            reason: DbPathReason::ExplicitDataDirEnv,
-        };
-
-        migrate_database(&resolution).unwrap();
-
-        let harnesses = list_harnesses(&resolution).unwrap();
-        assert_eq!(harnesses.len(), 1);
-        assert_eq!(harnesses[0].name, "claude");
-        assert!(harnesses[0].enabled);
-        assert_eq!(harnesses[0].mappings.len(), 2);
-
-        let claude = show_harness(&resolution, "claude").unwrap();
-        assert_eq!(claude.display_name, "Claude Code");
-
-        let mappings = list_all_mappings(&resolution).unwrap();
-        assert_eq!(mappings.len(), 2);
-        assert!(mappings.iter().any(|mapping| {
-            mapping.source_path == PathBuf::from("AGENTS.md")
-                && mapping.link_path == PathBuf::from("CLAUDE.md")
-                && mapping.link_kind == LinkKind::File
-        }));
-
-        disable_harness(&resolution, "claude").unwrap();
-        assert!(enabled_harness_mappings(&resolution).unwrap().is_empty());
-        enable_harness(&resolution, "claude").unwrap();
-        assert_eq!(enabled_harness_mappings(&resolution).unwrap().len(), 2);
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn harness_mapping_add_and_remove_manage_non_required_mappings() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let temp_dir = std::env::temp_dir().join(format!(
-            "agent-linker-harness-mapping-test-{}-{unique}",
-            std::process::id()
-        ));
-        fs::create_dir(&temp_dir).unwrap();
-        let resolution = DbPathResolution {
-            path: temp_dir.join("agent-linker.db"),
-            reason: DbPathReason::ExplicitDataDirEnv,
-        };
-        migrate_database(&resolution).unwrap();
-
-        let mapping = add_mapping(
-            &resolution,
-            AddHarnessMapping {
-                harness: "claude".to_string(),
-                source_path: PathBuf::from("AGENTS.md"),
-                link_path: PathBuf::from(".claude").join("extra.md"),
-                link_kind: LinkKind::File,
-            },
-        )
-        .unwrap();
-
-        assert!(!mapping.required);
-        assert!(list_all_mappings(&resolution)
-            .unwrap()
-            .iter()
-            .any(|stored| stored.id == mapping.id));
-
-        let removed = remove_mapping(&resolution, "claude", &mapping.link_path).unwrap();
-        assert_eq!(removed.id, mapping.id);
-
-        let required =
-            remove_mapping(&resolution, "claude", &PathBuf::from("CLAUDE.md")).unwrap_err();
-        assert!(required.to_string().contains("required"));
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-}
+#[path = "harness_tests.rs"]
+mod tests;

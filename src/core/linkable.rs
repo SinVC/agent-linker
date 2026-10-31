@@ -33,64 +33,24 @@ impl fmt::Display for LinkableItemType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SourceType {
-    LocalPath,
-}
-
-impl SourceType {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            SourceType::LocalPath => "local-path",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SourceOwnership {
-    External,
-}
-
-impl SourceOwnership {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            SourceOwnership::External => "external",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkableItem {
     pub id: String,
     pub name: String,
     pub alias: Option<String>,
+    pub default_link_name: String,
     pub item_type: LinkableItemType,
     pub source_kind: LinkKind,
     pub source_path: PathBuf,
-    pub source_type: SourceType,
-    pub source_ownership: SourceOwnership,
     pub default_target_dir: Option<PathBuf>,
     pub description: Option<String>,
-    pub repo_url: Option<String>,
-    pub repo_commit: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 impl LinkableItem {
     pub fn link_name(&self) -> String {
-        if let Some(alias) = &self.alias {
-            return alias.clone();
-        }
-
-        match self.item_type {
-            LinkableItemType::Skill => self.name.clone(),
-            LinkableItemType::Resource => self
-                .source_path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map_or_else(|| self.name.clone(), str::to_string),
-        }
+        self.default_link_name.clone()
     }
 
     pub fn default_project_link_path(&self) -> Result<PathBuf> {
@@ -257,22 +217,23 @@ pub fn parse_item_type(value: &str) -> Result<LinkableItemType> {
     }
 }
 
-pub fn parse_source_type(value: &str) -> Result<SourceType> {
-    match value {
-        "local-path" => Ok(SourceType::LocalPath),
-        _ => Err(Error::database(format!("unknown source type `{value}`"))),
-    }
-}
-
-pub fn parse_source_ownership(value: &str) -> Result<SourceOwnership> {
-    match value {
-        "external" => Ok(SourceOwnership::External),
-        _ => Err(Error::database(format!(
-            "unknown source ownership `{value}`"
-        ))),
-    }
-}
-
 pub fn parse_link_kind(value: &str) -> Result<LinkKind> {
     LinkKind::from_str(value).map_err(|_| Error::database(format!("unknown source kind `{value}`")))
+}
+
+/// Canonical project-relative spelling used by the Resource uniqueness key.
+pub fn normalize_target_dir(path: &Path) -> Result<String> {
+    validate_project_relative_target_dir(path)?;
+    let text = path
+        .to_str()
+        .ok_or_else(|| Error::invalid_arguments("target directory must be UTF-8"))?;
+    let parts: Vec<_> = text
+        .split(['/', '\\'])
+        .filter(|p| !p.is_empty() && *p != ".")
+        .collect();
+    Ok(if parts.is_empty() {
+        ".".to_string()
+    } else {
+        parts.join("/")
+    })
 }

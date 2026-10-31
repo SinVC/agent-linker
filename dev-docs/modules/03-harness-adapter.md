@@ -26,7 +26,6 @@ Harness 定义至少包含：
 - `name`
 - `display_name`
 - `built_in`
-- `enabled_by_default`
 - `enabled`
 - `created_at`
 - `updated_at`
@@ -49,14 +48,16 @@ Harness mapping 至少包含：
 
 - 主命令为 `aglink harness`，旧 `aglink framework` 已移除，不提供兼容别名。
 - MVP 内置 `claude`（显示名 Claude Code）并默认启用；当前无新增 Harness 的 CLI。
-- `harness enable/disable` 和 mapping 增删只修改全局数据库。当前 `init` 固定使用内置 Claude Code 两条映射，不读取启用标记或自定义 mapping；不支持 `init --harness`。
-- Rust 模块及类型使用 `harness` / `Harness`；SQLite 保留 `frameworks`、`framework_mappings` 和 `framework_id`，无需重建数据库。manifest 的兼容规则见 Project Init & Manifest。
+- `harness enable/disable` 和 mapping 增删只修改全局数据库。`init` 只读加载已启用 Harness 的 mappings；缺库时从同一个内置定义回退，不隐式建库；旧/新 schema 或其他存储错误正常返回。不支持 `init --harness`。
+- `harness.rs::builtin_harnesses()` 是内置定义与 mapping 的唯一来源；仅显式迁移使用 `INSERT OR IGNORE` Seed，不覆盖用户 enabled、mapping 或时间。
+- Schema v3 使用 `harnesses`、`harness_mappings`、`harness_id`；v1/v2 事务迁移保留 ID、启用状态和映射。时间为 i64 Unix 秒，bool 使用 SQLite 原生转换。
+- Harness name 大小写无关唯一，mapping 的 `(harness_id, link_path)` 大小写无关唯一；所有写操作由同一 Store 事务完成。
 - 后续 Harness 沿用相同 mapping 模型。
 - mapping 创建 symlink 时必须走 Symlink Core。
 
 ## 验收口径
 
-- `init` 使用内置映射生成兼容链接；后续接入全局 Harness 设置需另行实现与验证。
+- `init` 使用已启用映射；无启用 Harness 时不恢复 Claude，缺库时使用默认 Claude 映射且不创建全局目录。
 - Harness 链接状态能写入并回读 manifest。
 - 禁用或启用 Harness 只改变全局标记，不修改真实源或已有项目链接。
-- 用户自定义 mapping 可查询、增删，但当前不被 `init` 应用。
+- 用户自定义 mapping 可查询、增删并由新 init 消费，复用受控项目路径与 Symlink Core；不自动创建任意 source。

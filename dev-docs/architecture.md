@@ -30,7 +30,7 @@
 | Symlink Core | [01-symlink-core.md](modules/01-symlink-core.md) | 跨平台 symlink 抽象、状态、冲突、错误、Windows Broker 集成和后端策略 | P0 |
 | Project Init & Manifest | [02-project-init-manifest.md](modules/02-project-init-manifest.md) | `init` 目标结构、幂等规则、`.gitignore`、项目链接状态清单 | P0 |
 | Harness Adapter | [03-harness-adapter.md](modules/03-harness-adapter.md) | 真实源到 Agent Harness 约定路径的映射 | P0 |
-| Global Store & Registry | [04-global-store-registry.md](modules/04-global-store-registry.md) | SQLite、配置解析、Registry、Group 与迁移边界 | P1 |
+| Global Store & Registry | [04-global-store-registry.md](modules/04-global-store-registry.md) | Store 三入口、Schema v3、Registry、Group 与数据库诊断 | P1 |
 | Linkable Item | [05-linkable-item.md](modules/05-linkable-item.md) | Skill / Resource 统一模型、来源管理、路径规则 | P1 |
 | CLI Command Surface | [06-cli-command-surface.md](modules/06-cli-command-surface.md) | 顶层命令、命令职责和用户可见行为边界 | P1 |
 | Code Architecture & Verification | [07-code-architecture-verification.md](modules/07-code-architecture-verification.md) | 代码层职责、依赖规则、扩展策略和测试边界 | P1 |
@@ -63,15 +63,20 @@ Global Store & Registry
 
 ## 实施路径
 
+已定稿重构的分步执行入口见[重构 TODO](重构计划/README.md)，每步的修改范围、代码位置和验收要求保存在对应下钻文档中。
+
 1. 建立 Symlink Core：统一链接创建、读取、删除、状态检查、错误模型和 Windows Broker 默认后端。
 2. 建立 Project Init & Manifest：完成 `aglink init` 的真实源结构、Harness 兼容链接、manifest 写入和 `.gitignore` 管理。
-3. 建立 Harness Adapter：落地内置 Claude Code 映射和全局适配数据；`init` 接入全局启用标记与自定义 mapping 尚待实现，见模块文档。
-4. 建立 Global Store & Registry：完成 SQLite 路径解析、migration、配置诊断和 Registry 持久化边界。
+3. 建立 Harness Adapter：以 builtin_harnesses 统一内置定义；init 只读消费全局启用标记与自定义 mapping，缺库使用内置默认映射。
+4. 建立 Global Store & Registry：完成 Store 三入口、Schema v3 事务迁移、数据库诊断和 Registry 持久化边界。
 5. 建立 Linkable Item：实现 Skill / Resource 注册、刷新、路径规则和链接目标计算。
-6. 建立 CLI Command Surface：开放 `config`、`db`、`harness`、`skill`、`resource`、`group`、`link`、`unlink`、`status`、`clean`、`doctor`。
+6. 建立 CLI Command Surface：开放 `db`、`harness`、`skill`、`resource`、`group`、`link`、`unlink`、`status`、`clean`、`doctor`。
 7. 完成验证闭环：以 mock symlink、临时数据库、临时 manifest 和平台专项测试覆盖核心流程。
 
 ## 发布分发
 
 Release、安装、卸载、Windows Broker 打包和 portable 形态的约束见
 [release-distribution.md](release-distribution.md)。
+
+Windows 单用户安装目录调整的实施范围与验收要求见
+[handoff-windows-install-data-layout.md](handoff-windows-install-data-layout.md)。

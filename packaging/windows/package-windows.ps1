@@ -55,6 +55,7 @@ $archivePath = Join-Path $outPath $archiveName
 $stageRoot = Join-Path $outPath "stage-windows$suffix"
 
 if (Test-Path -LiteralPath $stageRoot) {
+    if ((Split-Path -Parent ([IO.Path]::GetFullPath($stageRoot))) -ne $outPath.TrimEnd('\')) { throw 'Invalid staging cleanup path' }
     Remove-Item -LiteralPath $stageRoot -Recurse -Force
 }
 if (Test-Path -LiteralPath $archivePath) {
@@ -69,9 +70,15 @@ Copy-Item -LiteralPath $aglinkPath -Destination (Join-Path $stageRoot "aglink.ex
 Copy-Item -Path (Join-Path $brokerPath "*") -Destination (Join-Path $stageRoot "broker") -Recurse
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "install-broker.ps1") -Destination (Join-Path $stageRoot "scripts")
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "uninstall-broker.ps1") -Destination (Join-Path $stageRoot "scripts")
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "maintain-install.ps1") -Destination (Join-Path $stageRoot "scripts")
 
 if ($Portable) {
-    New-Item -ItemType File -Force -Path (Join-Path $stageRoot "agent-linker.db") | Out-Null
+    $previousDataDir = $env:AGLINK_DATA_DIR
+    try {
+        $env:AGLINK_DATA_DIR = $stageRoot
+        & (Join-Path $stageRoot "aglink.exe") db migrate
+        if ($LASTEXITCODE -ne 0) { throw "Portable database initialization failed: $LASTEXITCODE" }
+    } finally { $env:AGLINK_DATA_DIR = $previousDataDir }
 }
 
 $receipt = [ordered]@{
@@ -85,7 +92,7 @@ $receipt = [ordered]@{
     install_dir = $null
     installed_at = $null
     archive = $archiveName
-    data_dir = if ($Portable) { "agent-linker.db next to aglink.exe" } else { "%LOCALAPPDATA%\agent-linker" }
+    data_dir = if ($Portable) { "agent-linker.db next to aglink.exe" } else { "<install_dir>\data" }
     broker = [ordered]@{
         required = $true
         service_name = "WinSymlinksBroker"

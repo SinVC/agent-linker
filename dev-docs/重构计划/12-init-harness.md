@@ -8,10 +8,9 @@
 
 ## 代码入口
 
-- [init_current_project/init_project_with_provider](../../src/core/manifest.rs#L131)、[ensure_harness_parent_dirs](../../src/core/manifest.rs#L241)、[record_from_mapping](../../src/core/manifest.rs#L409)。
-- [内置映射](../../src/core/harness.rs#L50)，06 后为统一 `builtin_harnesses()` 数据。
-- [enabled_harness_mappings](../../src/core/harness.rs#L208)、[HarnessMapping](../../src/core/harness.rs#L28)、[StoredHarnessMapping](../../src/core/harness.rs#L103)。
-- [Command::Init 编排](../../src/commands/mod.rs#L240)、[init 测试](../../src/core/manifest.rs#L674)。
+- [init_current_project/init_project_with_store/init_project_with_mappings](../../src/core/manifest.rs)。
+- [builtin_harnesses/default_init_mappings/StoredHarnessMapping::for_project](../../src/core/harness.rs)、[Command::Init](../../src/commands/mod.rs)。
+- [临时库和 mock Provider 测试](../../src/core/manifest_tests.rs)、[CLI 验收](../../tests/phase2_blind.rs)。
 
 ## 修改清单
 
@@ -31,4 +30,4 @@
 
 ## 执行记录
 
-未执行。完成时填写回退与数据库消费场景、修改文件和验证结果，再勾选 TODO 12。
+进度、验证结果与未解决问题见[本步进度](../重构编排/steps/12-progress.md)。

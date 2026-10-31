@@ -31,12 +31,9 @@ Linkable Item 至少包含：
 - `type`
 - `kind`
 - `source_path`
-- `source_type`
-- `source_ownership`
+- `default_link_name`
 - `default_target_dir`
 - `description`
-- `repo_url`
-- `repo_commit`
 - `created_at`
 - `updated_at`
 
@@ -56,11 +53,13 @@ Resource 约束：
 
 ## 关键决策
 
-- 同名不同源默认报错，提示用户改名或指定 alias。
+- name 跨 Skill/Resource 全局大小写无关唯一。alias 只决定默认链接名，不参与注册项 ID/name 查询；精确 ID 优先于名称，不因新随机 ID 格式限制合法名称。
+- Skill default_link_name 大小写无关唯一；Resource 按归一 `(target_dir, default_link_name)` 大小写无关唯一，允许不同目标目录的同名文件。
+- default_link_name 持久化：alias 优先，Skill 否则使用 name，Resource 否则使用 source 原名并沿用 name 回退。add/refresh/rename 同步维护。
+- 新 ID 使用 itm_<16hex> 随机格式；rename 保留 ID，不反向修改项目路径、Manifest 或 source；时间为 i64 Unix 秒，旧 Manifest unix 字段仍可读。
 - 注册时自动检测 kind，用户不手动指定。
 - 链接时实际 source kind 与 Registry 记录不一致时必须报错。
-- `source_ownership = external` 是 MVP 唯一实现模式。
-- `managed`、`repo_url`、`repo_commit` 等字段只作为未来集中管理或自动更新能力预留。
+- 来源始终外部管理，不持久化单值 source_type/source_ownership 或未消费的 repo/version/commit 预留字段。
 - 删除 Registry 项不自动删除已链接项目中的 symlink。
 
 ## 验收口径

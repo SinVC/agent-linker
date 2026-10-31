@@ -57,7 +57,9 @@ manifest 至少记录：
 
 - manifest 是项目链接状态清单，不是项目级配置文件。
 - Harness 术语改名不改变 manifest schema 或已有 ID，旧清单无需迁移；Rust 字段名为 `harness_name`，读写仍使用 `framework_name`。
-- 当前 `init` 固定使用内置 Claude Code 映射，不读取全局 Harness 启用标记或自定义 mapping。
+- `init` 对已初始化全局库只读加载已启用 Harness 映射；缺库时使用同一 builtin_harnesses 定义的 Claude 默认映射，不创建目录/库、不迁移或 Seed；旧 schema 等其他错误正常返回。无启用 Harness 时不强制恢复 Claude。
+- mapping 复用受控项目路径、Symlink Core 和 Manifest 保存入口；不自动创建任意 mapping source。全局启停和 mapping 变更不反向更改已有项目。
+- Manifest 时间使用 i64 Unix 秒并写为整数，旧 unix:<seconds> 字段仍可读。
 - manifest 只记录 `aglink` 创建或接管管理的 symlink。
 - manifest 支持 `status`、`unlink`、`clean`、审计和恢复。
 - manifest 已存在且合法时合并或更新；损坏时失败且不覆盖。

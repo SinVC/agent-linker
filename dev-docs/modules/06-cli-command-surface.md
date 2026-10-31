@@ -21,7 +21,6 @@
 
 ```text
 aglink init
-aglink config ...
 aglink db ...
 aglink harness ...
 aglink skill ...
@@ -41,16 +40,6 @@ aglink doctor
 ```text
 aglink --quiet <command>
 aglink --verbose <command>
-```
-
-配置命令：
-
-```text
-aglink config path
-aglink config list
-aglink config get <key>
-aglink config set <key> <value>
-aglink config unset <key>
 ```
 
 数据库命令：
@@ -150,7 +139,7 @@ aglink doctor
 ## 关键决策
 
 - Harness 指 Claude Code 等 Agent 运行系统，`harness` 管理其兼容路径与全局适配设置，不启停工具进程。
-- 当前 Harness 启用标记和自定义 mapping 仅保存在 SQLite；`init` 固定创建内置 Claude Code 链接，尚未读取这些设置。
+- `init` 只读消费已启用 Harness 映射；缺库使用内置 Claude 默认映射，不隐式初始化全局库。其他存储错误正常返回。
 - `link` 根据 Registry 中的 Linkable Item 类型决定链接目标。
 - `--as` 只覆盖本次链接名，不修改 Registry alias。
 - `--target-dir` 只用于 Resource 的本次链接目标覆盖。
@@ -169,3 +158,7 @@ aglink doctor
 - `link`、`unlink`、`status`、`clean`、`doctor` 及 group 链接命令从当前目录向上定位最近的 `.agents/links.toml`，遇文件系统根或 symlink 目录停止；未找到时提示先运行 `init`。`init` 严格使用当前目录，不上查。
 - 用户输出默认简洁，`--verbose` 提供诊断信息，`--quiet` 只输出必要错误。
 - 成功操作输出创建、跳过或更新等摘要。
+- 普通全局读写要求显式 db migrate，缺库/旧 schema 提示迁移，新 schema 提示升级。config 命令已移除，路径诊断使用 db path。
+- SQLite 写命令整体事务提交；group add/remove 输入按 item_id 去重，add 已有成员跳过并提示，未知项使整次事务失败。group list 只输出名称和成员数，show 保留完整成员。
+- db check 不建库/迁移/Seed，检查当前 schema 的五张核心表及 quick_check，行数不决定健康。Missing、SchemaMismatch、ReadOnly、LockedBusy、Invalid 返回非零，HealthyWritable 返回 0；Doctor 直接消费该状态。
+- 时间戳为 i64 Unix 秒，verbose 格式化为可读 UTC。

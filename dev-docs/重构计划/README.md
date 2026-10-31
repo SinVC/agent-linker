@@ -16,14 +16,16 @@
 
 ## 阶段二：存储与 Schema v3
 
-- [ ] 06 [Store 三入口与唯一内置 Seed 来源](06-store.md)
-- [ ] 07 [写命令事务与分组输入幂等](07-transactions.md)
-- [ ] 08 [移除 config 命令及运行时代码](08-remove-config.md)
-- [ ] 09 [Schema v3 迁移与数据模型同步](09-schema-v3.md)
-- [ ] 10 [分组列表聚合查询](10-group-summaries.md)
-- [ ] 11 [数据库检查状态与退出码](11-db-check.md)
-- [ ] 12 [init 消费已启用 Harness 映射](12-init-harness.md)
-- [ ] 13 [安装和打包的显式初始化](13-distribution.md)
+进度与验证记录按步骤维护：[06](../重构编排/steps/06-progress.md)、[07](../重构编排/steps/07-progress.md)、[08](../重构编排/steps/08-progress.md)、[09](../重构编排/steps/09-progress.md)、[10](../重构编排/steps/10-progress.md)、[11](../重构编排/steps/11-progress.md)、[12](../重构编排/steps/12-progress.md)、[13](../重构编排/steps/13-progress.md)。
+
+- [x] 06 [Store 三入口与唯一内置 Seed 来源](06-store.md)
+- [x] 07 [写命令事务与分组输入幂等](07-transactions.md)
+- [x] 08 [移除 config 命令及运行时代码](08-remove-config.md)
+- [x] 09 [Schema v3 迁移与数据模型同步](09-schema-v3.md)
+- [x] 10 [分组列表聚合查询](10-group-summaries.md)
+- [x] 11 [数据库检查状态与退出码](11-db-check.md)
+- [x] 12 [init 消费已启用 Harness 映射](12-init-harness.md)
+- [x] 13 [安装和打包的显式初始化](13-distribution.md)
 
 ## 阶段三：执行链路与模块收敛
 

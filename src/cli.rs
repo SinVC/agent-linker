@@ -10,9 +10,8 @@ use serde::Serialize;
 
 use crate::{
     commands::{
-        self, CleanCommand, Command, CommandReport, ConfigCommand, DbCommand, DoctorCommand,
-        GroupCommand, HarnessCommand, LinkCommand, LinkableCommand, StatusCommand, UnlinkCommand,
-        UnlinkTarget,
+        self, CleanCommand, Command, CommandReport, DbCommand, DoctorCommand, GroupCommand,
+        HarnessCommand, LinkCommand, LinkableCommand, StatusCommand, UnlinkCommand, UnlinkTarget,
     },
     core::{
         error::{Error, Result},
@@ -22,6 +21,7 @@ use crate::{
             UnlinkOptions,
         },
         symlink::{CreateSymlinkOutcome, LinkKind, LinkStatus, RemoveSymlinkOutcome},
+        util::format_utc,
     },
 };
 
@@ -41,10 +41,6 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum CliCommand {
     Init,
-    Config {
-        #[command(subcommand)]
-        command: CliConfigCommand,
-    },
     Db {
         #[command(subcommand)]
         command: CliDbCommand,
@@ -71,15 +67,6 @@ enum CliCommand {
     Status(CliStatusArgs),
     Clean(CliCleanArgs),
     Doctor,
-}
-
-#[derive(Debug, Subcommand)]
-enum CliConfigCommand {
-    Path,
-    List,
-    Get { key: String },
-    Set { key: String, value: String },
-    Unset { key: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -359,13 +346,6 @@ fn command_from_cli(cli: Cli) -> Result<Command> {
     let verbose = cli.verbose;
     match cli.command {
         CliCommand::Init => Ok(Command::Init),
-        CliCommand::Config { command } => Ok(Command::Config(match command {
-            CliConfigCommand::Path => ConfigCommand::Path,
-            CliConfigCommand::List => ConfigCommand::List,
-            CliConfigCommand::Get { key } => ConfigCommand::Get { key },
-            CliConfigCommand::Set { key, value } => ConfigCommand::Set { key, value },
-            CliConfigCommand::Unset { key } => ConfigCommand::Unset { key },
-        })),
         CliCommand::Db { command } => Ok(Command::Db(match command {
             CliDbCommand::Path => DbCommand::Path,
             CliDbCommand::Migrate => DbCommand::Migrate,
@@ -593,34 +573,10 @@ fn report_lines(report: &CommandReport, verbose: bool) -> Vec<String> {
             }
             lines
         }
-        CommandReport::ConfigPath(resolution) | CommandReport::DbPath(resolution) => vec![
+        CommandReport::DbPath(resolution) => vec![
             format!("Path: {}", resolution.path.display()),
             format!("Reason: {}", resolution.reason.as_str()),
         ],
-        CommandReport::ConfigList(entries) => {
-            if entries.is_empty() {
-                vec!["Config: empty".to_string()]
-            } else {
-                entries
-                    .iter()
-                    .map(|entry| format!("{}\t{}", entry.key, entry.value))
-                    .collect()
-            }
-        }
-        CommandReport::ConfigGet { key, entry } => match entry {
-            Some(entry) => vec![format!("{}={}", entry.key, entry.value)],
-            None => vec![format!("{key}: unset")],
-        },
-        CommandReport::ConfigSet(entry) => vec![format!("Set config `{}`", entry.key)],
-        CommandReport::ConfigUnset(report) => vec![format!(
-            "{} config `{}`",
-            if report.removed {
-                "Unset"
-            } else {
-                "Config already unset"
-            },
-            report.key
-        )],
         CommandReport::DbMigrate(report) => vec![
             format!("Database: {}", report.path.display()),
             format!(
@@ -637,7 +593,7 @@ fn report_lines(report: &CommandReport, verbose: bool) -> Vec<String> {
             let mut lines = vec![
                 format!("Database: {}", report.path.display()),
                 format!("Exists: {}", yes_no(report.exists)),
-                format!("Writable: {}", yes_no(report.writable)),
+                format!("Writable: {}", yes_no(report.is_ok())),
                 format!(
                     "Schema: {} / latest {}",
                     report
@@ -645,23 +601,11 @@ fn report_lines(report: &CommandReport, verbose: bool) -> Vec<String> {
                         .map_or_else(|| "missing".to_string(), |version| version.to_string()),
                     report.latest_schema_version
                 ),
-                format!(
-                    "Status: {}",
-                    if report.is_ok() {
-                        "ok"
-                    } else {
-                        "needs attention"
-                    }
-                ),
+                format!("Status: {}", report.status.as_str()),
             ];
             if verbose {
                 lines.push(format!("Reason: {}", report.reason.as_str()));
-                if let Some(count) = report.harness_count {
-                    lines.push(format!("Harnesses: {count}"));
-                }
-                if let Some(count) = report.mapping_count {
-                    lines.push(format!("Mappings: {count}"));
-                }
+                lines.extend(report.details.clone());
             }
             lines
         }
@@ -686,10 +630,8 @@ fn report_lines(report: &CommandReport, verbose: bool) -> Vec<String> {
             ];
             if verbose {
                 lines.push(format!("Built in: {}", yes_no(harness.built_in)));
-                lines.push(format!(
-                    "Enabled by default: {}",
-                    yes_no(harness.enabled_by_default)
-                ));
+                lines.push(format!("Created at: {}", format_utc(harness.created_at)));
+                lines.push(format!("Updated at: {}", format_utc(harness.updated_at)));
             }
             for mapping in &harness.mappings {
                 lines.push(format_mapping(mapping));
@@ -712,7 +654,7 @@ fn report_lines(report: &CommandReport, verbose: bool) -> Vec<String> {
         CommandReport::LinkableAdded(item) => {
             let mut lines = vec![format!("Added {} `{}`", item.item_type, item.name)];
             if verbose {
-                lines.extend(linkable_details(item));
+                lines.extend(linkable_details(item, verbose));
             }
             lines
         }
@@ -734,7 +676,7 @@ fn report_lines(report: &CommandReport, verbose: bool) -> Vec<String> {
                     .collect()
             }
         }
-        CommandReport::LinkableShow(item) => linkable_details(item),
+        CommandReport::LinkableShow(item) => linkable_details(item, verbose),
         CommandReport::LinkableRenamed(item) => {
             vec![format!("Renamed {} to `{}`", item.item_type, item.name)]
         }
@@ -747,7 +689,7 @@ fn report_lines(report: &CommandReport, verbose: bool) -> Vec<String> {
         CommandReport::GroupCreated(group) => vec![format!("Created group `{}`", group.name)],
         CommandReport::GroupList(groups) => groups
             .iter()
-            .map(|group| format!("{}\t{} items", group.name, group.items.len()))
+            .map(|group| format!("{}\t{} items", group.name, group.item_count))
             .collect(),
         CommandReport::GroupShow(group) => group_details(group),
         CommandReport::GroupRenamed(group) => vec![format!("Renamed group to `{}`", group.name)],
@@ -757,12 +699,16 @@ fn report_lines(report: &CommandReport, verbose: bool) -> Vec<String> {
                 group.name
             )]
         }
-        CommandReport::GroupUpdated(group) => {
-            vec![format!(
-                "Updated group `{}`: {} items",
-                group.name,
-                group.items.len()
-            )]
+        CommandReport::GroupUpdated(report) => {
+            let mut lines = vec![format!(
+                "Updated group '{}': {} items",
+                report.group.name,
+                report.group.items.len()
+            )];
+            for name in &report.skipped {
+                lines.push(format!("Skipped '{name}': already in group"));
+            }
+            lines
         }
         CommandReport::LinkItem(report) => link_item_lines(report, verbose),
         CommandReport::LinkGroup(report) => {
@@ -915,7 +861,7 @@ fn status_lines(report: &StatusReport, verbose: bool) -> Vec<String> {
     lines
 }
 
-fn linkable_details(item: &LinkableItem) -> Vec<String> {
+fn linkable_details(item: &LinkableItem, verbose: bool) -> Vec<String> {
     let mut lines = vec![
         format!("Id: {}", item.id),
         format!("Type: {}", item.item_type),
@@ -923,9 +869,11 @@ fn linkable_details(item: &LinkableItem) -> Vec<String> {
         format!("Link name: {}", item.link_name()),
         format!("Source: {}", item.source_path.display()),
         format!("Source kind: {}", item.source_kind),
-        format!("Source type: {}", item.source_type.as_str()),
-        format!("Source ownership: {}", item.source_ownership.as_str()),
     ];
+    if verbose {
+        lines.push(format!("Created at: {}", format_utc(item.created_at)));
+        lines.push(format!("Updated at: {}", format_utc(item.updated_at)));
+    }
     if let Some(alias) = &item.alias {
         lines.push(format!("Alias: {alias}"));
     }
@@ -1080,205 +1028,5 @@ struct JsonStatusEntry {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        clean_command, command_from_cli, link_command, parse_error_exit_code, unlink_command,
-        write_report, Cli, CliCleanArgs, CliLinkArgs, CliUnlinkArgs, OutputOptions,
-    };
-    use crate::{
-        commands::{Command, CommandReport, LinkCommand, UnlinkTarget},
-        core::{
-            manifest::LinkRecord,
-            project_links::{CleanMode, StatusEntry, StatusReport},
-            symlink::{LinkKind, LinkStatus, SymlinkBackend},
-        },
-    };
-    use clap::{error::ErrorKind, CommandFactory, Parser};
-    use std::{path::PathBuf, process::ExitCode};
-
-    #[test]
-    fn help_exits_successfully() {
-        let error = Cli::try_parse_from(["aglink", "--help"]).unwrap_err();
-        assert_eq!(parse_error_exit_code(&error), ExitCode::SUCCESS);
-    }
-
-    #[test]
-    fn harness_command_replaces_framework_in_parser_and_help() {
-        let subcommands: &[&[&str]] = &[
-            &["list"],
-            &["show", "claude"],
-            &["enable", "claude"],
-            &["disable", "claude"],
-            &["mapping", "list"],
-            &["mapping", "list", "claude"],
-            &[
-                "mapping",
-                "add",
-                "claude",
-                "AGENTS.md",
-                ".claude/extra.md",
-                "--kind",
-                "file",
-            ],
-            &["mapping", "remove", "claude", ".claude/extra.md"],
-        ];
-        for subcommand in subcommands {
-            let args = ["aglink", "harness"]
-                .into_iter()
-                .chain(subcommand.iter().copied());
-            let command = command_from_cli(Cli::try_parse_from(args).unwrap()).unwrap();
-            assert!(matches!(command, Command::Harness(_)));
-        }
-
-        let old_command = Cli::try_parse_from(["aglink", "framework", "list"]).unwrap_err();
-        assert_eq!(old_command.kind(), ErrorKind::InvalidSubcommand);
-        let help = Cli::command().render_help().to_string();
-        assert!(help.contains("harness"));
-        assert!(!help.contains("framework"));
-    }
-
-    #[test]
-    fn link_requires_item_or_group() {
-        let error = link_command(CliLinkArgs {
-            name: None,
-            group: None,
-            as_name: None,
-            target_dir: None,
-            dry_run: false,
-            force: false,
-        })
-        .unwrap_err();
-        assert!(error.to_string().contains("usage"));
-    }
-
-    #[test]
-    fn link_group_rejects_item_only_flags() {
-        let error = link_command(CliLinkArgs {
-            name: None,
-            group: Some("daily".to_string()),
-            as_name: Some("writer".to_string()),
-            target_dir: None,
-            dry_run: false,
-            force: false,
-        })
-        .unwrap_err();
-        assert!(error.to_string().contains("--as"));
-    }
-
-    #[test]
-    fn link_item_preserves_dry_run_and_force() {
-        let command = link_command(CliLinkArgs {
-            name: Some("writer".to_string()),
-            group: None,
-            as_name: Some("helper".to_string()),
-            target_dir: Some(PathBuf::from("docs")),
-            dry_run: true,
-            force: true,
-        })
-        .unwrap();
-
-        assert!(matches!(
-            command,
-            LinkCommand::Item {
-                request,
-                options
-            } if request.identifier == "writer"
-                && request.link_name_override.as_deref() == Some("helper")
-                && options.dry_run
-                && options.force
-        ));
-    }
-
-    #[test]
-    fn unlink_requires_exactly_one_target() {
-        let error = unlink_command(CliUnlinkArgs {
-            name: Some("writer".to_string()),
-            group: Some("daily".to_string()),
-            all: false,
-            dry_run: false,
-        })
-        .unwrap_err();
-        assert!(error.to_string().contains("usage"));
-    }
-
-    #[test]
-    fn unlink_all_uses_none_identifier() {
-        let command = unlink_command(CliUnlinkArgs {
-            name: None,
-            group: None,
-            all: true,
-            dry_run: true,
-        })
-        .unwrap();
-
-        assert!(matches!(command.target, UnlinkTarget::Item(None)));
-        assert!(command.options.dry_run);
-    }
-
-    #[test]
-    fn clean_modes_are_exclusive() {
-        let error = clean_command(CliCleanArgs {
-            broken: true,
-            missing_source: true,
-            dry_run: false,
-        })
-        .unwrap_err();
-        assert!(error.to_string().contains("usage"));
-
-        let command = clean_command(CliCleanArgs {
-            broken: false,
-            missing_source: true,
-            dry_run: true,
-        })
-        .unwrap();
-        assert_eq!(command.options.mode, CleanMode::MissingSource);
-        assert!(command.options.dry_run);
-    }
-
-    #[test]
-    fn status_json_uses_structured_escaping() {
-        let report = CommandReport::Status {
-            json: true,
-            report: StatusReport {
-                project_root: PathBuf::from("project\"root"),
-                manifest_path: PathBuf::from(".agents").join("links.toml"),
-                entries: vec![StatusEntry {
-                    record: LinkRecord {
-                        id: "id\"1".to_string(),
-                        scope: "project".to_string(),
-                        harness_name: "registry".to_string(),
-                        item_id: "item\\1".to_string(),
-                        item_name: "writer\nskill".to_string(),
-                        source_path: PathBuf::from("source\"path"),
-                        link_path: PathBuf::from(".agents").join("skills").join("writer"),
-                        link_kind: LinkKind::Directory,
-                        provider_backend: SymlinkBackend::Mock,
-                        created_by_command: "link".to_string(),
-                        created_at: "unix:1".to_string(),
-                        updated_at: "unix:1".to_string(),
-                    },
-                    absolute_source_path: PathBuf::from("source"),
-                    absolute_link_path: PathBuf::from("link"),
-                    status: LinkStatus::Missing,
-                }],
-            },
-        };
-
-        let mut output = Vec::new();
-        write_report(
-            &mut output,
-            &report,
-            OutputOptions {
-                quiet: true,
-                verbose: false,
-            },
-        )
-        .unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
-
-        assert_eq!(value["project_root"], "project\"root");
-        assert_eq!(value["links"][0]["id"], "id\"1");
-        assert_eq!(value["links"][0]["item_name"], "writer\nskill");
-        assert_eq!(value["links"][0]["status"], "missing");
-    }
-}
+#[path = "cli_tests.rs"]
+mod tests;

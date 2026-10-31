@@ -1,87 +1,107 @@
 # Agent Linker CLI Reference
 
-本文对应当前实现：全局 SQLite 保存注册与配置，项目 `.agents/links.toml` 保存受管理符号链接。
+`aglink` manages global state (the item registry, groups, and harness definitions) in a global SQLite database, and tracks project-scoped managed symlinks in `.agents/links.toml` (the *project manifest*).
 
-## 公共约定
+## General Conventions
 
-- `<参数>` 必填，`[参数]` 可选，`...` 为一个或多个，`|` 为二选一（非 shell 管道）；空格参数加引号。各级命令支持 `--help`。
-- **项目根就是工作目录，不向上查找。** `init/link/unlink/status/clean` 操作该目录；Registry、Group 定义、Config、Harness 操作全局数据库；`doctor` 检查两者。
-- 源相对工作目录解析，注册为规范化绝对路径。目标目录、Harness 路径相对项目根，禁止绝对路径和 `..`。名称、别名、`--as` 须为非空单段，禁止 `/\<>:"|?*` 及单独的 `.`、`..`。
-- 缺清单按空清单处理，损坏时报错；不强制先 `init`。`link` 创建缺少的真实父目录并保存清单，不补齐初始化结构；父路径含符号链接时报错。
-- 不复制、移动或删除源。正确链接可重复链接并纳管；`--force` 只替换指向错误的符号链接，不能替换真实文件／目录或抢占其他条目的清单路径。
-- Windows 创建链接依赖可用的 `WinSymlinksBroker`，不可用时报错，不自动回退；用 `aglink doctor --verbose` 诊断。
-- `--dry-run` 仅用于列明的命令：检查预览，不修改项目目录、链接或清单；数据库仍可能创建／迁移。修改不保证事务性：遇错停止，不回滚。
-- 全局 `-q/--quiet` 隐藏普通结果，`--verbose` 增加报告细节；可置于子命令前后，同时使用 quiet 优先。`status --json` 不受两者影响；错误写 stderr。
-- 完成／帮助返回 `0`，参数／执行错误及 `doctor` 检查失败返回 `1`。`status` 异常、`db check` 的 `needs attention` 不导致非零退出。
+- **Scope and Decoupling**:
+  - **The current working directory is always the project root** (`aglink` never searches parent directories). `init`, `link`, `unlink`, `status`, and `clean` operate on the current project; `skill`, `resource`, `group`, `db`, and `harness` operate on the global database; `doctor` inspects both.
+  - **Global and project states are decoupled**: mutating the global database (renaming, unregistering, modifying groups, or changing harness settings) never alters existing project symlinks or manifest records.
+- **Paths and Naming**:
+  - Registered source paths are resolved relative to the current working directory and stored as canonicalized absolute paths.
+  - Project target directories and harness mapping paths must be relative to the project root (absolute paths and `..` segments are rejected).
+  - Item names, aliases (`--alias`), group names, and link overrides (`--as`) must be non-empty single path segments without `/\<>:"|?*` or standalone `.` / `..`.
+- **Manifest and Non-transactional Execution**: Running `init` beforehand is not required. A missing manifest is treated as empty; a malformed manifest returns an error. `link` creates missing real parent directories and updates the manifest (failing if any parent segment is a symlink), without scaffolding the rest of the `init` layout. `--dry-run` previews operations without modifying project files or the manifest. Filesystem operations are not transactional: execution stops on the first error without rolling back prior changes.
+- **File Safety**:
+  - `aglink` never copies, moves, or deletes source files, and never overwrites or deletes real files or directories.
+  - Re-linking an existing symlink that already points to the expected target succeeds and records it in the manifest. `--force` **only replaces symlinks pointing to the wrong target**—it never overwrites real files/directories or claims a manifest path owned by another entry.
+  - `unlink` and `clean` only remove symlinks and manifest records (or just the record if the path is already absent). If any selected target is a real file, real directory, or unsupported file type, the operation aborts with an error.
+- **Windows Backend**: Symlink creation on Windows requires a running `WinSymlinksBroker` service and fails immediately without fallback if unavailable (diagnose with `aglink doctor --verbose`).
+- **Output and Exit Codes**: `-q`/`--quiet` suppresses normal output and `--verbose` adds diagnostic detail (accepted before or after subcommands; `--quiet` wins if both are set; `status --json` is unaffected). Errors go to `stderr`. Commands exit with `0` on success or `--help`, and `1` on invalid arguments, runtime errors, or failed `doctor` / `db check` checks (`status` anomalies exit with `0`).
 
-## 名称与路径
+## Item Resolution and Default Paths
 
-`<item>` 接受注册名、别名或 Registry ID。Skill/Resource 维护限对应类型；`link`、`group add/remove` 跨类型查询，多项匹配时报错，用 ID 消歧。同类型注册名、默认链接名分别唯一；若注册名与其他别名交叉重合，类型内维护按注册名排序取首项，应使用 ID 避免误选。`<group>` 接受分组名或 ID。
+`<item>` accepts a registered name or Registry ID. `<group>` accepts a group name or ID.
 
-| 规则 | Skill | Resource |
+- **Uniqueness**: Registered names are globally case-insensitive unique across Skill and Resource. Skill default link names are case-insensitive unique; Resource default destinations are unique by normalized target directory and link name, allowing the same filename in different directories. Aliases determine default link names and do not participate in ID/name lookups.
+
+| Rule | Skill | Resource |
 | --- | --- | --- |
-| 源要求 | 目录，含可读、非空白 UTF-8 `SKILL.md` | 文件或目录 |
-| 省略 `--name` | 输入路径末段去掉最后一个扩展名 | 同左，如 `guide.md` → `guide` |
-| 默认链接名 | `--alias`，否则注册名 | `--alias`，否则规范化源路径完整末段，如 `guide.md` |
-| 项目相对链接路径 | `.agents/skills/<链接名>` | `<目标目录>/<链接名>` |
+| **Source Requirement** | Directory containing a readable, non-blank UTF-8 `SKILL.md` | Any file or directory |
+| **Default Name** (`--name` omitted) | Final path segment without its last extension | Same as Skill (e.g., `guide.md` → `guide`) |
+| **Default Link Name** | `--alias` if set; otherwise the registered name | `--alias` if set; otherwise the full final segment of the canonical source path (e.g., `guide.md`) |
+| **Default Project Link Path** | `.agents/skills/<link-name>` | `<target-dir>/<link-name>` |
 
-`link --as` 覆盖默认链接名，不补扩展名；Resource 的 `link --target-dir` 覆盖注册目录。均不改 Registry；同一条目可链接到多个路径。
+`link --as <link-name>` overrides the default link name verbatim (without auto-appending an extension), and Resource `link --target-dir <dir>` overrides the target directory for that operation only. A single item may be linked to multiple paths in the same project.
 
-## 初始化、状态与清理
-
-- `aglink init`：创建缺失的真实 `AGENTS.md`（空）、`.agents/`、`.agents/skills/`；创建 `CLAUDE.md` → `AGENTS.md`、`.claude/skills/` → `.agents/skills/` 并合并入清单。保留源内容，正确链接跳过；源位置类型不符、错误链接或真实路径冲突时报错。`.gitignore` 的 aglink managed block 包含 `.claude/`、`.agents/skills/`、`.agents/links.toml`，保留块外内容。可重复执行；无 `--dry-run/--force`。
-- `aglink status [--json]`：只检查清单记录，不扫描未管理链接，不修复。JSON 顶层为 `project_root`、`manifest_path`、`links`；每项含 `id`（清单 ID）、`item_id`、`item_name`、`link_path`、`source_path`、`link_kind`（`file/directory`）、`provider_backend`、`status`。
-
-| `links[].status` | 含义 |
-| --- | --- |
-| `missing` | 链接路径不存在 |
-| `correct_symlink` | 指向记录源且源类型正确 |
-| `wrong_symlink_target` | 指向其他目标，即使该目标不存在 |
-| `broken_symlink` | 指向记录源，但该源不存在 |
-| `existing_real_file` / `existing_real_directory` | 链接位置被真实文件／目录占用 |
-| `unsupported_file_type` | 链接位置类型不支持，或源类型与记录不符 |
-
-- `aglink clean [--broken|--missing-source] [--dry-run]`：筛选互斥，仅处理清单。默认选 `missing/broken_symlink`；`--broken` 只选 `broken_symlink`；`--missing-source` 按记录源不存在筛选，即使链接指向别处。所选路径不存在时只删记录，否则删符号链接及记录；选中真实文件／目录或不支持类型时报错。
-- `aglink doctor`：检查数据库、schema、Harness 记录、清单及后端；Windows 临时创建／删除链接探测 Broker。缺清单按空清单通过；不修复项目链接，Harness 查询可能初始化／迁移数据库。
-
-## 链接与解除链接
+## Initialization, Status, and Cleanup
 
 ```text
-aglink link <item> [--as <链接名>] [--target-dir <目录>] [--force] [--dry-run]
+aglink init
+aglink status [--json]
+aglink clean [--broken | --missing-source] [--dry-run]
+aglink doctor
+```
+
+- **`init`**: Idempotently scaffolds the current project (no `--dry-run` or `--force`). Creates missing `AGENTS.md` (empty file), `.agents/`, and `.agents/skills/` (preserving existing content); reads enabled harness mappings from the initialized global database and records created links in the manifest (when the database is missing, falls back to the same built-in Claude mappings without initializing it) (skipping existing valid symlinks, failing on mismatched source types or target conflicts); updates the `aglink` managed block in `.gitignore` (`.claude/`, `.agents/skills/`, `.agents/links.toml`).
+- **`status [--json]`**: Inspects only manifest entries without scanning for untracked symlinks or repairing links. `--json` outputs `project_root`, `manifest_path`, and `links` (each containing manifest `id`, `item_id`, `item_name`, `link_path`, `source_path`, `link_kind` [`file`/`directory`], `provider_backend`, and `status`).
+
+| `links[].status` | Description |
+| --- | --- |
+| `missing` | No file or symlink exists at the link path |
+| `correct_symlink` | Symlink points to the recorded source path, and the source exists with the expected type |
+| `wrong_symlink_target` | Symlink points to a different target (whether or not that target exists) |
+| `broken_symlink` | Symlink points to the recorded source path, but the source no longer exists |
+| `existing_real_file` / `existing_real_directory` | A real file or real directory occupies the link path |
+| `unsupported_file_type` | An unsupported file type occupies the link path, or the source type no longer matches the manifest |
+
+- **`clean`**: Removes stale manifest entries using mutually exclusive filters: defaults to `missing` and `broken_symlink`; `--broken` selects only `broken_symlink`; `--missing-source` selects entries whose recorded source no longer exists (even if the symlink points elsewhere).
+- **`doctor`**: Verifies the global database, schema, built-in harness records, project manifest, and symlink backend (probing `WinSymlinksBroker` on Windows via a temporary symlink). Does not repair project links.
+
+## Linking and Unlinking
+
+```text
+aglink link <item> [--as <link-name>] [--target-dir <dir>] [--force] [--dry-run]
 aglink link --group <group> [--force] [--dry-run]
 aglink unlink <selector> [--dry-run]
 aglink unlink --group <group> [--dry-run]
 aglink unlink --all [--dry-run]
 ```
 
-- `link` 校验源存在、Skill 内容及源类型；`--target-dir` 仅 Resource 可用。分组用成员默认路径，不接受 `--as/--target-dir`；逐项执行，失败前成功的链接保留。
-- `unlink <selector>` **查询清单，不查询 Registry**：接受清单 ID、条目 ID、清单条目名、项目相对链接路径或末段名。须恰好匹配一条；多条时用清单 ID 或完整相对路径消歧。Registry 改名／注销后仍可操作。
-- selector、`--group`、`--all` 必选且互斥。`--group` 按**当前成员 ID**选全部对应链接；不记录链接时所属组，移出组者不选。`--all` 包括 `init` 的 Harness 链接。
-- 删除所选正确／错误／损坏链接及记录，路径缺失时只删记录；先检查全部所选项，真实文件／目录或不支持类型会阻止操作。保留源及父目录；单项和 `--all` 不依赖数据库。
+- **`link`**: Validates source existence, type, and `SKILL.md` content. `--target-dir` applies only to Resources. `--group` links each member sequentially using its default path (`--as` and `--target-dir` are not supported).
+- **`unlink`**: Requires exactly one of `<selector>`, `--group`, or `--all`. Pre-validates all selected targets before making changes; if any target is a real file/directory or unsupported type, the entire command aborts without partial deletions.
+  - `<selector>` **queries only the project manifest (without accessing the database)**: accepts a manifest ID, `item_id`, recorded `item_name`, project-relative `link_path`, or link basename. Must match exactly one entry; disambiguate multiple matches with the manifest ID or full relative path.
+  - `--group <group>`: Selects all manifest entries matching the group's **current member IDs** (items removed from the group after linking are not selected).
+  - `--all`: Selects all manifest entries, including `init` harness links (without accessing the database).
 
-## Skill 与 Resource 注册
+## Skill and Resource Registry
 
 ```text
-aglink skill add <path> [--name <名称>] [--alias <链接名>]
-aglink resource add <path> --target-dir <目录> [--name <名称>] [--alias <链接名>]
+aglink skill add <path> [--name <name>] [--alias <link-name>]
+aglink resource add <path> --target-dir <dir> [--name <name>] [--alias <link-name>]
 aglink <type> list
 aglink <type> show <item>
-aglink <type> rename <item> <新注册名>
+aglink <type> rename <item> <new-name>
 aglink <type> remove <item>
 aglink <type> refresh <item>
 ```
 
-`<type>` 为 `skill` 或 `resource`。`add` 只注册本地源，不创建链接；同类型同注册名或同默认链接名报错，重复注册不更新。
+Where `<type>` is `skill` or `resource`:
 
-`list/show` 查看注册；`rename` 保留 ID、别名及分组引用，不改项目链接／清单；无别名 Skill 改名影响以后默认链接名。`remove` 注销条目及分组成员关系，保留源和链接。`refresh` 校验原路径并更新规范化路径／时间，源丢失或类型变化时报错，不寻找移动后的源或修复链接。修改源路径、别名、Resource 默认目录需注销后重注册（ID 改变）；已有链接应先 `unlink`。
+- **`add`**: Registers a local source in the global database without creating project links. Fails on a globally conflicting registered name or default destination (using the uniqueness rules above; does not overwrite).
+- **`list` / `show`**: Lists all items of that type or shows details for a single item.
+- **`rename`**: Updates the registered name while keeping its ID, alias, and groups (renaming an unaliased Skill changes its default link name for future `link` calls).
+- **`remove`**: Unregisters the item and removes it from all groups.
+- **`refresh`**: Re-validates the original source path and updates its canonical path and timestamp; fails if the source is missing or changed type (does not track moved files).
+- Changing a source path, alias, or default target directory requires `remove` followed by `add` (which assigns a new ID; `unlink` existing project links first).
 
-## Group 分组
+## Groups
 
 ```text
-aglink group create <名称>
+aglink group create <name>
 aglink group list
 aglink group show <group>
-aglink group rename <group> <新名称>
+aglink group rename <group> <new-name>
 aglink group delete <group>
 aglink group add <group> <item>...
 aglink group remove <group> <item>...
@@ -89,64 +109,64 @@ aglink group link <group> [--force] [--dry-run]
 aglink group unlink <group> [--dry-run]
 ```
 
-`create` 建空组，重名报错；`list/show` 查看组及成员。`add/remove` 至少一个成员；重复输入、添加已有成员、移除非成员报错。`rename/delete` 和成员增删不改项目链接；删组保留条目。`group link/unlink` 分别等价于 `link/unlink --group`。
+- **`create`**: Creates an empty group (fails if the name exists). **`list`**: Aggregates group names and member counts; **`show`** loads full members. **`rename` / `delete`**: Renames or deletes a group (deleting a group does not unregister its members).
+- **`add` / `remove`**: Adds or removes one or more members in one transaction. Inputs deduplicate by item_id; add skips existing members with a message. Unknown items or remove of non-members fail and roll back the command.
+- **`group link` / `group unlink`**: Aliases for `link --group` and `unlink --group`.
 
-## 配置与数据库
+## Database
 
 ```text
-aglink config path
-aglink config list
-aglink config get <key>
-aglink config set <key> <value>
-aglink config unset <key>
 aglink db path
 aglink db migrate
-aglink db backup [文件路径]
+aglink db backup [file-path]
 aglink db check
 ```
 
-- `config path` 与 `db path` 等价：显示路径及原因，不打开数据库。其余 Config、Registry、Group 定义、Harness 查询／修改自动创建／迁移数据库。
-- Config 存取任意字符串键值，**尚无接入 CLI 行为的键或默认值**。`set` 新增／覆盖，key 不得全空白；`get` 不存在输出 `unset`；`unset` 删除值，不存在也成功；`list` 列已保存值。
-- `db migrate` 创建／升级数据库，补齐内置 Harness 数据。`db backup` 先迁移再备份；省略路径时在数据库同目录生成 `agent-linker-backup-<纳秒时间戳>.db`；显式为相对工作目录或绝对**文件路径**，自动建父目录，目标存在时报错。
-- `db check` 检查存在性、可写性、schema、Harness／映射记录，不做 SQLite 完整性扫描或迁移。需读取输出状态；需失败退出码用 `doctor`。
+- **`db path`**: Prints the resolved database path and selection reason without opening the database. Queries use read-only connections without creation, migration, or seeding. Missing/old databases require `aglink db migrate`; newer schemas require upgrading aglink.
+- **`db migrate`**: Explicitly initializes or upgrades to schema v3 in one transaction, preserving existing IDs and relations. Built-in seed uses INSERT OR IGNORE and preserves user state and timestamps. Ordinary reads and writes never initialize or migrate.
+- **`db backup [file-path]`**: Opens an existing source read-only and writes a consistent SQLite snapshot, including committed WAL data, without changing the source schema. Defaults to `agent-linker-backup-<unix-nanos>.db` in `<installRoot>/backups/` for normal Windows installs, or in the database directory for other modes. An explicit relative or absolute path creates missing parent directories and fails if the destination exists.
+- **`db check`**: Checks existence, schema version, all five core tables, and SQLite quick_check, then probes writability without CREATE. Empty harness tables can be healthy. Reports missing/schema_mismatch/read_only/locked_busy/invalid with nonzero exit status; healthy_writable exits 0. Does not initialize, migrate, or seed.
 
-数据库按优先级选择，文件名固定为 `agent-linker.db`：
+**Database Path Resolution Order** (filename is always `agent-linker.db`):
+1. Directory in non-empty `AGLINK_DATA_DIR` (relative paths resolved against the working directory).
+2. Windows `bin/aglink.exe` with a valid normal Agent Linker installation receipt in its installation root: `<installRoot>/data/`. Receipt read/validation errors fail explicitly; a missing database does not change the target.
+3. An **existing** `agent-linker.db` next to the `aglink` executable (portable mode).
+4. Platform default directory: Windows `%LOCALAPPDATA%/agent-linker/`; macOS `~/Library/Application Support/agent-linker/`; Linux `$XDG_DATA_HOME/agent-linker/` (or `~/.local/share/agent-linker/`).
 
-1. 非空环境变量 `AGLINK_DATA_DIR` 指定目录（相对值相对于工作目录）。
-2. 可执行文件同目录**已存在**的 `agent-linker.db`（portable 模式）。
-3. 平台默认目录：Windows `%LOCALAPPDATA%/agent-linker/`；macOS `~/Library/Application Support/agent-linker/`；Linux `$XDG_DATA_HOME/agent-linker/`，未设置时 `~/.local/share/agent-linker/`。
+Source/manual installs must run `aglink db migrate` before their first query. Use an ordinary user account daily. Agent persistent writes run outside the sandbox with host authorization; initialized-database queries and link dry-runs can run inside it. Permission failures are explicit and never switch databases or disable the sandbox. Normal Windows installations resolve independently of `LOCALAPPDATA`; explicit `AGLINK_DATA_DIR` overrides intentionally select another configuration. Other layouts should explicitly unify that directory across entry points.
 
-## Harness 兼容适配
+## Harness Compatibility
 
-Harness 指运行 Agent 的软件系统，如 Claude Code。本组命令管理兼容路径与适配设置，不启动／停止该工具；旧 `framework` 命令已移除。
+Manages compatibility path mappings for host AI agent tools (such as Claude Code) without launching or stopping the host tool (replaces the removed `framework` command).
 
 ```text
 aglink harness list
-aglink harness show <Harness>
-aglink harness enable <Harness>
-aglink harness disable <Harness>
-aglink harness mapping list [Harness]
-aglink harness mapping add <Harness> <source> <link> --kind <file|dir>
-aglink harness mapping remove <Harness> <link>
+aglink harness show <harness>
+aglink harness enable <harness>
+aglink harness disable <harness>
+aglink harness mapping list [harness]
+aglink harness mapping add <harness> <source> <link> --kind <file|dir>
+aglink harness mapping remove <harness> <link>
 ```
 
-`<Harness>` 为已有 Harness 名或 ID；内置 `claude` 指 Claude Code，无新增 Harness 命令。`list/show` 查看定义，`enable/disable` 修改**全局**启用标记。mapping 的 source/link 为项目相对路径，添加时不校验源存在；kind 为文件／目录（`dir` 也接受 `directory`）。`mapping list` 省略 Harness 列全部；同 Harness 重复 link 报错，required 内置映射不可删。
+- `<harness>` accepts an existing name or ID (only `claude` is built in; custom harnesses cannot be added). `enable`/`disable` toggles the global enabled flag.
+- **`mapping`**: `<source>` and `<link>` are project-relative paths (`add` does not check whether `<source>` exists; `--kind` accepts `file`, `dir`, or `directory`). Omitting `[harness]` in `mapping list` lists all harnesses. Duplicate `<link>` paths per harness are rejected, and `required` built-in mappings cannot be removed.
+- Settings apply to new `init` calls, which read enabled harness mappings without writing the database. No enabled harness means no compatibility links. A missing database uses the built-in Claude defaults without creating it; old/new schema and other store errors are reported. Existing projects are not changed by setting updates.
 
-**当前仅维护数据库，不修改项目链接；`init` 固定使用内置 Claude Code 两条映射，不读取数据库启用标记／自定义 mapping。** 禁用适配不阻止 `init` 创建兼容链接，新增 mapping 不生效。
+## End-to-End Example
 
-## 示例：名称覆盖与最终路径
+Run from the project root (assuming `../skills/writer/SKILL.md` is non-empty and `../guide.md` exists):
 
-在项目根执行；假设 `../skills/writer/SKILL.md` 有非空内容，`../guide.md` 存在，名称未注册且目标无冲突：
-
-```text
+```bash
+aglink db migrate
 aglink init
-aglink skill add ../skills/writer --name writer --alias writing
-aglink link writer --as draft
-aglink unlink .agents/skills/draft
-aglink resource add ../guide.md --target-dir docs
-aglink link guide --target-dir references --as handbook.md --dry-run
-aglink link guide --target-dir references --as handbook.md
+aglink skill add ../skills/writer --name writer --alias writing # Default link name: writing
+aglink link writer --as draft                                   # Override: creates .agents/skills/draft -> ../skills/writer
+aglink unlink .agents/skills/draft                              # Removes symlink & manifest record; keeps source & registry item
+
+aglink resource add ../guide.md --target-dir docs               # Inferred name: guide; default path: docs/guide.md
+aglink link guide --target-dir references --as handbook.md      # Override: creates references/handbook.md -> ../guide.md
 aglink unlink references/handbook.md
 ```
 
-Skill 创建 `.agents/skills/draft` → writer 源目录，注册默认仍为 `writing`。Resource 注册名为 `guide`，默认路径 `docs/guide.md`，本次创建 `references/handbook.md` → guide.md 源文件。`unlink` 删除链接和记录，保留源及注册信息。
+SQLite writes commit once per command. group add/remove deduplicate by item_id; add skips existing members with a message. group list aggregates names and member counts; show loads full members. New Item/Group IDs use itm_<16hex>/grp_<16hex>; rename preserves IDs, sources, and existing projects. Verbose timestamps use readable UTC.
