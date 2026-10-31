@@ -1,0 +1,1828 @@
+diff --git a/src/core/manifest.rs b/src/core/manifest.rs
+index e23d4e5..a135673 100644
+--- a/src/core/manifest.rs
++++ b/src/core/manifest.rs
+@@ -3,6 +3,7 @@
+ use std::{
+     collections::{BTreeMap, BTreeSet},
+     fs,
++    io::Write,
+     path::{Path, PathBuf},
+     str::FromStr,
+ };
+@@ -24,14 +25,29 @@ const MANIFEST_VERSION: u32 = 1;
+ const MANIFEST_PATH: &str = ".agents/links.toml";
+ const MANAGED_GITIGNORE_BEGIN: &str = "# BEGIN aglink managed";
+ const MANAGED_GITIGNORE_END: &str = "# END aglink managed";
+-const MANAGED_GITIGNORE_PATTERNS: &[&str] = &[".claude/", ".agents/skills/", ".agents/links.toml"];
++const MANAGED_GITIGNORE_PATTERNS: &[&str] = &[".claude/", ".agents/"];
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum LinkOrigin {
++    Harness,
++    Item,
++}
++
++impl LinkOrigin {
++    pub fn as_str(self) -> &'static str {
++        match self {
++            Self::Harness => "harness",
++            Self::Item => "item",
++        }
++    }
++}
+ 
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub struct LinkRecord {
+     pub id: String,
+-    pub scope: String,
+-    /// Serialized as `framework_name` in manifest schema 1 for compatibility.
+-    pub harness_name: String,
++    pub origin: LinkOrigin,
++    /// Present only for Harness links; serialized as `framework_name` in schema 1.
++    pub harness_name: Option<String>,
+     pub item_id: String,
+     pub item_name: String,
+     pub source_path: PathBuf,
+@@ -69,8 +85,15 @@ impl Manifest {
+         let mut seen_paths = BTreeSet::new();
+         for link in &self.links {
+             require_non_empty("id", &link.id)?;
+-            require_non_empty("scope", &link.scope)?;
+-            require_non_empty("framework_name", &link.harness_name)?;
++            match (link.origin, link.harness_name.as_deref()) {
++                (LinkOrigin::Harness, Some(name)) => require_non_empty("framework_name", name)?,
++                (LinkOrigin::Item, None) => {}
++                _ => {
++                    return Err(Error::manifest(
++                        "only harness links must have a framework_name",
++                    ))
++                }
++            }
+             require_non_empty("item_id", &link.item_id)?;
+             require_non_empty("item_name", &link.item_name)?;
+             require_non_empty("created_by_command", &link.created_by_command)?;
+@@ -222,6 +245,20 @@ pub fn load_manifest(project_root: &Path) -> Result<Manifest> {
+ }
+ 
+ pub fn save_manifest(project_root: &Path, manifest: &Manifest) -> Result<()> {
++    save_manifest_with_io(
++        project_root,
++        manifest,
++        |file, content| file.write_all(content),
++        |source, destination| fs::rename(source, destination),
++    )
++}
++
++fn save_manifest_with_io(
++    project_root: &Path,
++    manifest: &Manifest,
++    write: impl FnOnce(&mut fs::File, &[u8]) -> std::io::Result<()>,
++    rename: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
++) -> Result<()> {
+     manifest.validate()?;
+     validate_project_paths(project_root, manifest)?;
+ 
+@@ -242,8 +279,23 @@ pub fn save_manifest(project_root: &Path, manifest: &Manifest) -> Result<()> {
+         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+         Err(error) => return Err(error.into()),
+     }
++    let temporary = resolve_managed_project_path(
++        project_root,
++        &PathBuf::from(".agents").join(format!(".links.toml.tmp.{}", std::process::id())),
++    )?;
+     fs::create_dir_all(parent)?;
+-    fs::write(path, serialize_manifest(manifest))?;
++    // Never follow or overwrite an existing temporary leaf, including symlinks.
++    let mut file = fs::OpenOptions::new()
++        .write(true)
++        .create_new(true)
++        .open(&temporary)?;
++    let written = write(&mut file, serialize_manifest(manifest).as_bytes());
++    drop(file);
++    let result = written.and_then(|_| rename(&temporary, &path));
++    if result.is_err() {
++        let _ = fs::remove_file(&temporary);
++    }
++    result?;
+     Ok(())
+ }
+ 
+@@ -395,17 +447,8 @@ fn replace_or_append_managed_block(original: &str, block: &str) -> Result<String
+             let after_end = end + MANAGED_GITIGNORE_END.len();
+             let mut updated = String::new();
+             updated.push_str(&original[..begin]);
+-            if !updated.is_empty() && !updated.ends_with('\n') {
+-                updated.push('\n');
+-            }
+-            updated.push_str(block);
+-            let remainder = original[after_end..].trim_start_matches(['\r', '\n']);
+-            if !remainder.is_empty() {
+-                updated.push_str(remainder);
+-                if !updated.ends_with('\n') {
+-                    updated.push('\n');
+-                }
+-            }
++            updated.push_str(block.trim_end_matches('\n'));
++            updated.push_str(&original[after_end..]);
+             Ok(updated)
+         }
+         (None, None) => {
+@@ -430,8 +473,8 @@ fn record_from_mapping(mapping: &HarnessMapping, backend: SymlinkBackend) -> Lin
+ 
+     LinkRecord {
+         id: mapping.id.to_string(),
+-        scope: "project".to_string(),
+-        harness_name: mapping.harness_name.to_string(),
++        origin: LinkOrigin::Harness,
++        harness_name: Some(mapping.harness_name.to_string()),
+         item_id: mapping.item_id.to_string(),
+         item_name: mapping.item_name.to_string(),
+         source_path: mapping.source_path.clone(),
+@@ -451,8 +494,10 @@ fn serialize_manifest(manifest: &Manifest) -> String {
+         output.push('\n');
+         output.push_str("[[links]]\n");
+         push_kv(&mut output, "id", &link.id);
+-        push_kv(&mut output, "scope", &link.scope);
+-        push_kv(&mut output, "framework_name", &link.harness_name);
++        push_kv(&mut output, "origin", link.origin.as_str());
++        if let Some(name) = &link.harness_name {
++            push_kv(&mut output, "framework_name", name);
++        }
+         push_kv(&mut output, "item_id", &link.item_id);
+         push_kv(&mut output, "item_name", &link.item_name);
+         push_kv(
+@@ -574,10 +619,26 @@ fn parse_string_value(value: &str, line_number: usize) -> Result<String> {
+ 
+ fn link_from_table(mut table: BTreeMap<String, String>) -> Result<LinkRecord> {
+     let id = required_field(&mut table, "id")?;
++    // Legacy scope was always project; origin replaces the registry sentinel.
++    table.remove("scope");
++    let mut harness_name = table.remove("framework_name");
++    let origin = match table.remove("origin").as_deref() {
++        Some("harness") => LinkOrigin::Harness,
++        Some("item") => LinkOrigin::Item,
++        Some(value) => return Err(Error::manifest(format!("unknown origin `{value}`"))),
++        None => match harness_name.as_deref() {
++            Some("registry") => {
++                harness_name = None;
++                LinkOrigin::Item
++            }
++            Some(_) => LinkOrigin::Harness,
++            None => return Err(Error::manifest("manifest link is missing `origin`")),
++        },
++    };
+     let link = LinkRecord {
+         id,
+-        scope: required_field(&mut table, "scope")?,
+-        harness_name: required_field(&mut table, "framework_name")?,
++        origin,
++        harness_name,
+         item_id: required_field(&mut table, "item_id")?,
+         item_name: required_field(&mut table, "item_name")?,
+         source_path: PathBuf::from(required_field(&mut table, "source_path")?),
+@@ -780,6 +841,164 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn atomic_save_creates_and_replaces_existing_manifest() {
++        let project = TestDir::new("atomic-save");
++        save_manifest(project.path(), &Manifest::empty()).unwrap();
++        assert_eq!(load_manifest(project.path()).unwrap(), Manifest::empty());
++        let replacement = Manifest {
++            schema_version: 1,
++            links: vec![super::record_from_mapping(
++                &crate::core::harness::default_init_mappings()[0],
++                crate::core::symlink::SymlinkBackend::Mock,
++            )],
++        };
++        save_manifest(project.path(), &replacement).unwrap();
++        assert_eq!(load_manifest(project.path()).unwrap(), replacement);
++        assert_eq!(
++            fs::read_dir(project.path().join(".agents"))
++                .unwrap()
++                .count(),
++            1
++        );
++    }
++
++    #[test]
++    fn atomic_save_temporary_creation_failure_preserves_original_and_occupied_path() {
++        let project = TestDir::new("atomic-temp-failure");
++        save_manifest(project.path(), &Manifest::empty()).unwrap();
++        let original = fs::read(super::manifest_path(project.path())).unwrap();
++        let temporary = project
++            .path()
++            .join(".agents")
++            .join(format!(".links.toml.tmp.{}", std::process::id()));
++        fs::write(&temporary, "occupied temporary file").unwrap();
++        assert!(save_manifest(project.path(), &Manifest::empty()).is_err());
++        assert_eq!(fs::read(&temporary).unwrap(), b"occupied temporary file");
++        assert_eq!(
++            fs::read(super::manifest_path(project.path())).unwrap(),
++            original
++        );
++        fs::remove_file(&temporary).unwrap();
++        fs::create_dir(&temporary).unwrap();
++        assert!(save_manifest(project.path(), &Manifest::empty()).is_err());
++        assert!(temporary.is_dir());
++        assert_eq!(
++            fs::read(super::manifest_path(project.path())).unwrap(),
++            original
++        );
++    }
++
++    #[test]
++    fn atomic_save_partial_write_failure_preserves_original() {
++        let project = TestDir::new("atomic-write-failure");
++        save_manifest(project.path(), &Manifest::empty()).unwrap();
++        let original = fs::read(super::manifest_path(project.path())).unwrap();
++        let result = super::save_manifest_with_io(
++            project.path(),
++            &Manifest::empty(),
++            |file, content| {
++                std::io::Write::write_all(file, &content[..content.len() / 2])?;
++                Err(std::io::Error::new(
++                    std::io::ErrorKind::WriteZero,
++                    "injected partial write failure",
++                ))
++            },
++            |_, _| panic!("a failed write must not rename the temporary file"),
++        );
++        assert!(result.is_err());
++        assert_eq!(
++            fs::read(super::manifest_path(project.path())).unwrap(),
++            original
++        );
++        assert_eq!(
++            fs::read_dir(project.path().join(".agents"))
++                .unwrap()
++                .count(),
++            1
++        );
++        save_manifest(project.path(), &Manifest::empty()).unwrap();
++        assert_eq!(load_manifest(project.path()).unwrap(), Manifest::empty());
++    }
++
++    #[test]
++    fn atomic_save_rename_failure_preserves_original() {
++        let project = TestDir::new("atomic-rename-failure");
++        save_manifest(project.path(), &Manifest::empty()).unwrap();
++        let original = fs::read(super::manifest_path(project.path())).unwrap();
++        let replacement = Manifest {
++            schema_version: 1,
++            links: vec![super::record_from_mapping(
++                &crate::core::harness::default_init_mappings()[0],
++                crate::core::symlink::SymlinkBackend::Mock,
++            )],
++        };
++        let result = super::save_manifest_with_io(
++            project.path(),
++            &replacement,
++            |file, content| std::io::Write::write_all(file, content),
++            |source, destination| {
++                assert_eq!(source.parent(), destination.parent());
++                assert_eq!(
++                    fs::read_to_string(source).unwrap(),
++                    serialize_manifest(&replacement)
++                );
++                assert_eq!(fs::read(destination).unwrap(), original);
++                Err(std::io::Error::new(
++                    std::io::ErrorKind::PermissionDenied,
++                    "injected rename failure",
++                ))
++            },
++        );
++        assert!(result.is_err());
++        assert_eq!(
++            fs::read(super::manifest_path(project.path())).unwrap(),
++            original
++        );
++        assert_eq!(load_manifest(project.path()).unwrap(), Manifest::empty());
++        assert_eq!(
++            fs::read_dir(project.path().join(".agents"))
++                .unwrap()
++                .count(),
++            1
++        );
++    }
++
++    #[cfg(windows)]
++    #[test]
++    fn atomic_save_windows_locked_destination_preserves_original_and_allows_retry() {
++        use std::os::windows::fs::OpenOptionsExt;
++
++        let project = TestDir::new("atomic-windows-replace");
++        save_manifest(project.path(), &Manifest::empty()).unwrap();
++        let path = super::manifest_path(project.path());
++        let original = fs::read(&path).unwrap();
++        let replacement = Manifest {
++            schema_version: 1,
++            links: vec![super::record_from_mapping(
++                &crate::core::harness::default_init_mappings()[0],
++                crate::core::symlink::SymlinkBackend::Mock,
++            )],
++        };
++        // Permit reads while denying delete sharing, which Windows rename requires.
++        let locked = fs::OpenOptions::new()
++            .read(true)
++            .share_mode(1)
++            .open(&path)
++            .unwrap();
++        assert!(save_manifest(project.path(), &replacement).is_err());
++        assert_eq!(fs::read(&path).unwrap(), original);
++        assert_eq!(
++            fs::read_dir(project.path().join(".agents"))
++                .unwrap()
++                .count(),
++            1
++        );
++        drop(locked);
++        save_manifest(project.path(), &replacement).unwrap();
++        assert_eq!(load_manifest(project.path()).unwrap(), replacement);
++    }
++
+     #[test]
+     fn manifest_round_trips_generated_schema() {
+         let temp_dir = TestDir::new("manifest");
+@@ -812,14 +1031,82 @@ created_at = "unix:1"
+ updated_at = "unix:1"
+ "#;
+         let manifest = parse_manifest(legacy).unwrap();
+-        assert_eq!(manifest.links[0].harness_name, "claude");
++        assert_eq!(manifest.links[0].origin, super::LinkOrigin::Harness);
++        assert_eq!(manifest.links[0].harness_name.as_deref(), Some("claude"));
+         assert_eq!(manifest.links[0].id, "init:claude:agents-md");
+         let saved = serialize_manifest(&manifest);
+         assert!(saved.contains("framework_name = \"claude\""));
+         assert!(!saved.contains("harness_name ="));
++        assert!(!saved.contains("scope ="));
++        assert!(saved.contains("origin = \"harness\""));
+         assert_eq!(parse_manifest(&saved).unwrap(), manifest);
+     }
+ 
++    #[test]
++    fn legacy_registry_and_mixed_manifests_preserve_records() {
++        let project = TestDir::new("legacy-origins");
++        let harness = super::record_from_mapping(
++            &crate::core::harness::default_init_mappings()[0],
++            crate::core::symlink::SymlinkBackend::Mock,
++        );
++        let mut item = harness.clone();
++        item.id = "link:stable-id:docs/notes".into();
++        item.origin = super::LinkOrigin::Item;
++        item.harness_name = None;
++        item.item_id = "stable-id".into();
++        item.item_name = "notes".into();
++        item.link_path = PathBuf::from("docs/notes");
++        item.created_by_command = "link".into();
++        item.created_at = "unix:12".into();
++        item.updated_at = "unix:34".into();
++        for links in [vec![item.clone()], vec![harness.clone(), item.clone()]] {
++            let expected = Manifest {
++                schema_version: 1,
++                links,
++            };
++            let legacy = serialize_manifest(&expected)
++                .replace(
++                    "origin = \"item\"",
++                    "scope = \"project\"\nframework_name = \"registry\"",
++                )
++                .replace("origin = \"harness\"", "scope = \"project\"");
++            let parsed = parse_manifest(&legacy).unwrap();
++            assert_eq!(parsed, expected);
++            save_manifest(project.path(), &parsed).unwrap();
++            assert_eq!(load_manifest(project.path()).unwrap(), expected);
++            let saved = fs::read_to_string(super::manifest_path(project.path())).unwrap();
++            assert!(!saved.contains("scope ="));
++            assert!(!saved.contains("framework_name = \"registry\""));
++        }
++        // Explicit new entries and legacy entries can coexist in one manifest.
++        let mixed = serialize_manifest(&Manifest {
++            schema_version: 1,
++            links: vec![harness, item],
++        })
++        .replace("origin = \"harness\"", "scope = \"project\"");
++        assert_eq!(parse_manifest(&mixed).unwrap().links.len(), 2);
++    }
++
++    #[test]
++    fn manifest_rejects_unknown_origins_and_inconsistent_harness_names() {
++        let harness = super::record_from_mapping(
++            &crate::core::harness::default_init_mappings()[0],
++            crate::core::symlink::SymlinkBackend::Mock,
++        );
++        let text = serialize_manifest(&Manifest {
++            schema_version: 1,
++            links: vec![harness],
++        });
++        for invalid in [
++            text.replace("origin = \"harness\"", "origin = \"unknown\""),
++            text.replace("origin = \"harness\"", "origin = \"item\""),
++            text.replace("framework_name = \"claude\"\n", ""),
++            text.replace("framework_name = \"claude\"", "framework_name = \"\""),
++        ] {
++            assert!(parse_manifest(&invalid).is_err(), "{invalid}");
++        }
++    }
++
+     #[test]
+     fn damaged_manifest_fails_without_overwrite() {
+         let temp_dir = TestDir::new("manifest");
+@@ -868,7 +1155,7 @@ updated_at = "unix:1"
+         let manifest = load_manifest(temp_dir.path()).unwrap();
+         assert_eq!(manifest.links.len(), 2);
+         assert!(manifest.links.iter().any(|link| {
+-            link.harness_name == "claude"
++            link.harness_name.as_deref() == Some("claude")
+                 && link.source_path == PathBuf::from("AGENTS.md")
+                 && link.link_path == PathBuf::from("CLAUDE.md")
+         }));
+@@ -943,13 +1230,25 @@ updated_at = "unix:1"
+ 
+     #[test]
+     fn gitignore_managed_block_preserves_user_content() {
+-        let original = "target/\n\n# BEGIN aglink managed\nold\n# END aglink managed\nlogs/\n";
++        let original = "target/\r\n\n# BEGIN aglink managed\n.agents/skills/\n.agents/links.toml\n# END aglink managed\r\n\n\nlogs/";
+         let updated =
+             replace_or_append_managed_block(original, &managed_gitignore_block()).unwrap();
+ 
+-        assert!(updated.starts_with("target/\n\n"));
+-        assert!(updated.contains(".claude/"));
+-        assert!(updated.ends_with("logs/\n"));
++        assert_eq!(
++            updated,
++            format!(
++                "target/\r\n\n{}\r\n\n\nlogs/",
++                managed_gitignore_block().trim_end_matches('\n')
++            )
++        );
++        assert_eq!(
++            managed_gitignore_block(),
++            "# BEGIN aglink managed\n.claude/\n.agents/\n# END aglink managed\n"
++        );
++        assert_eq!(
++            replace_or_append_managed_block(&updated, &managed_gitignore_block()).unwrap(),
++            updated
++        );
+         assert_eq!(updated.matches("# BEGIN aglink managed").count(), 1);
+     }
+ 
+diff --git a/src/core/project_links.rs b/src/core/project_links.rs
+index 7f2abc8..ee513e6 100644
+--- a/src/core/project_links.rs
++++ b/src/core/project_links.rs
+@@ -17,7 +17,7 @@ use crate::core::{
+         validate_optional_alias, validate_project_relative_target_dir, validate_resource_source,
+         validate_skill_source, LinkableItem, LinkableItemType,
+     },
+-    manifest::{load_manifest, manifest_path, save_manifest, LinkRecord},
++    manifest::{load_manifest, manifest_path, save_manifest, LinkOrigin, LinkRecord},
+     paths::{
+         self, current_project_root, managed_relative_path_key, normalize_windows_path,
+         resolve_managed_project_path, DbPathResolution,
+@@ -473,7 +473,10 @@ pub fn unlink_group_project_with_provider_and_db_with_options(
+         .links
+         .iter()
+         .enumerate()
+-        .filter_map(|(index, record)| item_ids.contains(&record.item_id.as_str()).then_some(index))
++        .filter_map(|(index, record)| {
++            (record.origin == LinkOrigin::Item && item_ids.contains(&record.item_id.as_str()))
++                .then_some(index)
++        })
+         .collect();
+ 
+     unlink_selected_indexes(project_root, provider, manifest, &selected_indexes, options)
+@@ -1016,6 +1019,10 @@ fn plan_symlink(
+                 )
+             }
+         }
++        LinkStatus::BrokenSymlink { .. } if options.force => {
++            // Registered sources were validated before planning, just as for execution.
++            Ok(CreateSymlinkOutcome::ReplacedWrongSymlink)
++        }
+         LinkStatus::BrokenSymlink { target } => Err(SymlinkError::new(
+             SymlinkErrorKind::SourceNotFound,
+             provider.backend(),
+@@ -1117,8 +1124,8 @@ fn link_record_from_item(
+     let now = timestamp();
+     LinkRecord {
+         id: record_id.to_string(),
+-        scope: "project".to_string(),
+-        harness_name: "registry".to_string(),
++        origin: LinkOrigin::Item,
++        harness_name: None,
+         item_id: item.id.clone(),
+         item_name: item.name.clone(),
+         source_path: item.source_path.clone(),
+@@ -1144,7 +1151,11 @@ fn select_unlink_indexes(
+     identifier: Option<&str>,
+ ) -> Result<BTreeSet<usize>> {
+     let Some(identifier) = identifier else {
+-        return Ok((0..records.len()).collect());
++        return Ok(records
++            .iter()
++            .enumerate()
++            .filter_map(|(index, record)| (record.origin == LinkOrigin::Item).then_some(index))
++            .collect());
+     };
+ 
+     let matches: Vec<usize> = records
+@@ -1195,9 +1206,12 @@ mod tests {
+     use crate::core::{
+         db::migrate_database,
+         linkable::LinkableItemType,
+-        manifest::load_manifest,
++        manifest::{init_project_with_provider, load_manifest, save_manifest, LinkOrigin},
+         paths::{DbPathReason, DbPathResolution},
+-        registry::{add_group_items, add_item, create_group, AddLinkableItem},
++        registry::{
++            add_group_items, add_item, create_group, remove_group_items, rename_item,
++            AddLinkableItem,
++        },
+         symlink::{CreateSymlinkOutcome, LinkKind, LinkStatus, MockEntry, MockSymlinkProvider},
+         test_support::TestDir,
+     };
+@@ -1368,6 +1382,165 @@ mod tests {
+         provider
+     }
+ 
++    #[test]
++    fn link_identity_alias_and_rename_preserve_existing_project_state() {
++        for item_type in [LinkableItemType::Skill, LinkableItemType::Resource] {
++            let project = TestDir::new("link-identity");
++            let resolution = database(&project);
++            fs::create_dir(project.path().join(".agents")).unwrap();
++            let mut provider = MockSymlinkProvider::new();
++            provider.add_dir(project.path());
++            provider.add_dir(project.path().join(".agents"));
++            provider.add_dir(project.path().join(".agents/skills"));
++            provider.add_dir(project.path().join("docs"));
++            let mut items = Vec::new();
++            for (name, alias) in [("alpha", "beta"), ("beta", "gamma")] {
++                let source = project.path().join(format!("source-{name}"));
++                if item_type == LinkableItemType::Skill {
++                    fs::create_dir(&source).unwrap();
++                    fs::write(source.join("SKILL.md"), name).unwrap();
++                    provider.add_dir(crate::core::test_support::canonical_path(&source));
++                } else {
++                    fs::write(&source, name).unwrap();
++                    provider.add_file(crate::core::test_support::canonical_path(&source));
++                }
++                items.push(
++                    add_item(
++                        &resolution,
++                        AddLinkableItem {
++                            item_type,
++                            name: name.into(),
++                            alias: Some(alias.into()),
++                            source_path: source,
++                            default_target_dir: (item_type == LinkableItemType::Resource)
++                                .then(|| PathBuf::from("docs")),
++                            description: None,
++                        },
++                    )
++                    .unwrap(),
++                );
++            }
++            let request = |identifier: &str, override_name: Option<&str>| LinkItemRequest {
++                identifier: identifier.into(),
++                link_name_override: override_name.map(str::to_string),
++                target_dir_override: None,
++            };
++            assert!(link_project_with_provider_and_db(
++                project.path(),
++                &mut provider,
++                &resolution,
++                request("gamma", None),
++            )
++            .is_err());
++            let beta_link = link_project_with_provider_and_db(
++                project.path(),
++                &mut provider,
++                &resolution,
++                request("beta", None),
++            )
++            .unwrap();
++            assert_eq!(beta_link.item_name, "beta");
++            assert_eq!(beta_link.source_path, items[1].source_path);
++            assert_eq!(
++                beta_link.link_path,
++                items[1].default_project_link_path().unwrap()
++            );
++            let alpha_link = link_project_with_provider_and_db(
++                project.path(),
++                &mut provider,
++                &resolution,
++                request(&items[0].id, None),
++            )
++            .unwrap();
++            assert_eq!(
++                alpha_link.link_path,
++                items[0].default_project_link_path().unwrap()
++            );
++            create_group(&resolution, "daily", None).unwrap();
++            assert_eq!(
++                add_group_items(&resolution, "daily", &["beta".into()])
++                    .unwrap()
++                    .items[0]
++                    .id,
++                items[1].id
++            );
++            let before_manifest = fs::read(super::manifest_path(project.path())).unwrap();
++            let before_entries: Vec<_> = [&alpha_link, &beta_link]
++                .iter()
++                .map(|link| {
++                    provider
++                        .entry(&project.path().join(&link.link_path))
++                        .cloned()
++                })
++                .collect();
++            let renamed = rename_item(&resolution, item_type, "beta", "renamed").unwrap();
++            assert_eq!(renamed.id, items[1].id);
++            assert_eq!(renamed.alias, items[1].alias);
++            assert_eq!(
++                fs::read(super::manifest_path(project.path())).unwrap(),
++                before_manifest
++            );
++            for (link, entry) in [&alpha_link, &beta_link].iter().zip(before_entries) {
++                assert_eq!(
++                    provider
++                        .entry(&project.path().join(&link.link_path))
++                        .cloned(),
++                    entry
++                );
++            }
++            for item in &items {
++                let content_path = if item_type == LinkableItemType::Skill {
++                    item.source_path.join("SKILL.md")
++                } else {
++                    item.source_path.clone()
++                };
++                assert_eq!(fs::read_to_string(content_path).unwrap(), item.name);
++            }
++            let removed = unlink_project_with_provider(
++                project.path(),
++                &mut provider,
++                Some(items[1].id.clone()),
++            )
++            .unwrap();
++            assert_eq!(removed.outcomes.len(), 1);
++            assert!(provider
++                .entry(&project.path().join(&beta_link.link_path))
++                .is_none());
++            let overridden = link_project_with_provider_and_db(
++                project.path(),
++                &mut provider,
++                &resolution,
++                request("renamed", Some("custom")),
++            )
++            .unwrap();
++            assert_eq!(overridden.link_path.file_name().unwrap(), "custom");
++            assert_eq!(
++                crate::core::registry::show_item(&resolution, item_type, "renamed")
++                    .unwrap()
++                    .alias
++                    .as_deref(),
++                Some("gamma")
++            );
++            let removed = unlink_group_project_with_provider_and_db(
++                project.path(),
++                &mut provider,
++                &resolution,
++                "daily",
++            )
++            .unwrap();
++            assert_eq!(removed.outcomes.len(), 1);
++            assert!(provider
++                .entry(&project.path().join(&overridden.link_path))
++                .is_none());
++            assert!(provider
++                .entry(&project.path().join(&alpha_link.link_path))
++                .is_some());
++            let manifest = load_manifest(project.path()).unwrap();
++            assert_eq!(manifest.links.len(), 1);
++            assert_eq!(manifest.links[0].item_id, items[0].id);
++        }
++    }
++
+     #[test]
+     fn link_status_and_unlink_round_trip_for_skill() {
+         let temp_dir = TestDir::new("project-links");
+@@ -1375,7 +1548,7 @@ mod tests {
+         fs::create_dir(temp_dir.path().join(".agents").join("skills")).unwrap();
+         let source = seed_skill_source(&temp_dir);
+         let resolution = database(&temp_dir);
+-        add_item(
++        let item = add_item(
+             &resolution,
+             AddLinkableItem {
+                 item_type: LinkableItemType::Skill,
+@@ -1423,12 +1596,11 @@ mod tests {
+             LinkStatus::CorrectSymlink { .. }
+         ));
+ 
+-        let unlink = unlink_project_with_provider(
+-            temp_dir.path(),
+-            &mut provider,
+-            Some("writer".to_string()),
+-        )
+-        .unwrap();
++        let renamed =
++            rename_item(&resolution, LinkableItemType::Skill, "writer", "author").unwrap();
++        assert_eq!(renamed.id, item.id);
++        let unlink =
++            unlink_project_with_provider(temp_dir.path(), &mut provider, Some(item.id)).unwrap();
+         assert_eq!(unlink.outcomes.len(), 1);
+         assert_eq!(
+             provider.entry(
+@@ -1575,6 +1747,166 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn force_dry_run_and_execution_agree_and_preserve_state_on_rejection() {
++        for scenario in [
++            "wrong",
++            "dangling",
++            "missing-source",
++            "wrong-kind",
++            "file",
++            "directory",
++        ] {
++            for force in [false, true] {
++                let project = TestDir::new("force-parity");
++                fs::create_dir_all(project.path().join(".agents/skills")).unwrap();
++                save_empty_manifest(project.path());
++                let source = seed_skill_source(&project);
++                let resolution = database(&project);
++                let item = add_item(
++                    &resolution,
++                    AddLinkableItem {
++                        item_type: LinkableItemType::Skill,
++                        name: "writer".to_string(),
++                        alias: None,
++                        source_path: source.clone(),
++                        default_target_dir: None,
++                        description: None,
++                    },
++                )
++                .unwrap();
++                let mut provider = seed_provider(project.path(), &source);
++                let link = project.path().join(".agents/skills/writer");
++                let old = project.path().join("old");
++                if scenario == "wrong" {
++                    provider.add_dir(&old);
++                }
++                match scenario {
++                    "file" => provider.add_file(&link),
++                    "directory" => provider.add_dir(&link),
++                    _ => provider.add_symlink(&link, &old, LinkKind::Directory),
++                }
++                if scenario == "missing-source" {
++                    fs::remove_dir_all(&source).unwrap();
++                } else if scenario == "wrong-kind" {
++                    fs::remove_dir_all(&source).unwrap();
++                    fs::write(&source, "wrong kind").unwrap();
++                    provider.add_file(&item.source_path);
++                }
++                let original = provider.entry(&link).cloned();
++                let manifest_before = fs::read(super::manifest_path(project.path())).unwrap();
++                let request = || LinkItemRequest {
++                    identifier: "writer".to_string(),
++                    link_name_override: None,
++                    target_dir_override: None,
++                };
++                let planned = link_project_with_provider_and_db_with_options(
++                    project.path(),
++                    &mut provider,
++                    &resolution,
++                    request(),
++                    LinkOptions {
++                        dry_run: true,
++                        force,
++                    },
++                );
++                assert_eq!(provider.entry(&link), original.as_ref(), "{scenario}");
++                assert_eq!(
++                    fs::read(super::manifest_path(project.path())).unwrap(),
++                    manifest_before,
++                    "{scenario}"
++                );
++                let actual = link_project_with_provider_and_db_with_options(
++                    project.path(),
++                    &mut provider,
++                    &resolution,
++                    request(),
++                    LinkOptions {
++                        dry_run: false,
++                        force,
++                    },
++                );
++                match (planned, actual) {
++                    (Ok(planned), Ok(actual)) => {
++                        assert!(force && matches!(scenario, "wrong" | "dangling"));
++                        assert_eq!(planned.outcome, CreateSymlinkOutcome::ReplacedWrongSymlink);
++                        assert_eq!(actual.outcome, planned.outcome);
++                        assert_eq!(
++                            provider.entry(&link),
++                            Some(&MockEntry::Symlink {
++                                target: item.source_path.clone(),
++                                kind: LinkKind::Directory,
++                            })
++                        );
++                        assert_eq!(load_manifest(project.path()).unwrap().links.len(), 1);
++                    }
++                    (Err(planned), Err(actual)) => {
++                        assert_eq!(planned.to_string(), actual.to_string(), "{scenario}");
++                        assert_eq!(provider.entry(&link), original.as_ref(), "{scenario}");
++                        assert_eq!(
++                            fs::read(super::manifest_path(project.path())).unwrap(),
++                            manifest_before,
++                            "{scenario}"
++                        );
++                    }
++                    _ => panic!("dry-run and execution disagree: {scenario}, force={force}"),
++                }
++            }
++        }
++    }
++
++    #[test]
++    fn project_replacement_failure_keeps_old_link_and_manifest_bytes() {
++        let project = TestDir::new("force-failure");
++        fs::create_dir_all(project.path().join(".agents/skills")).unwrap();
++        save_empty_manifest(project.path());
++        let source = seed_skill_source(&project);
++        let resolution = database(&project);
++        add_item(
++            &resolution,
++            AddLinkableItem {
++                item_type: LinkableItemType::Skill,
++                name: "writer".to_string(),
++                alias: None,
++                source_path: source.clone(),
++                default_target_dir: None,
++                description: None,
++            },
++        )
++        .unwrap();
++        let mut provider = seed_provider(project.path(), &source);
++        let link = project.path().join(".agents/skills/writer");
++        provider.add_symlink(
++            &link,
++            project.path().join("old-missing"),
++            LinkKind::Directory,
++        );
++        let before = provider.entry(&link).cloned();
++        let manifest_before = fs::read(super::manifest_path(project.path())).unwrap();
++        provider.fail_next_replacement();
++        let error = link_project_with_provider_and_db_with_options(
++            project.path(),
++            &mut provider,
++            &resolution,
++            LinkItemRequest {
++                identifier: "writer".to_string(),
++                link_name_override: None,
++                target_dir_override: None,
++            },
++            LinkOptions {
++                dry_run: false,
++                force: true,
++            },
++        )
++        .unwrap_err();
++        assert!(error.to_string().contains("injected replacement failure"));
++        assert_eq!(provider.entry(&link), before.as_ref());
++        assert_eq!(
++            fs::read(super::manifest_path(project.path())).unwrap(),
++            manifest_before
++        );
++    }
++
+     #[test]
+     fn link_as_and_resource_target_dir_override_do_not_change_registry_defaults() {
+         let temp_dir = TestDir::new("resource-links");
+@@ -1621,6 +1953,139 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn group_and_all_unlink_preserve_harness_and_follow_current_member_ids() {
++        let project = TestDir::new("unlink-origins");
++        let resolution = database(&project);
++        let source = seed_skill_source(&project);
++        let writer = add_item(
++            &resolution,
++            AddLinkableItem {
++                item_type: LinkableItemType::Skill,
++                name: "writer".into(),
++                alias: None,
++                source_path: source.clone(),
++                default_target_dir: None,
++                description: None,
++            },
++        )
++        .unwrap();
++        let notes_source = project.path().join("notes.md");
++        fs::write(&notes_source, "notes\n").unwrap();
++        add_item(
++            &resolution,
++            AddLinkableItem {
++                item_type: LinkableItemType::Resource,
++                name: "notes".into(),
++                alias: None,
++                source_path: notes_source.clone(),
++                default_target_dir: Some(PathBuf::from("docs")),
++                description: None,
++            },
++        )
++        .unwrap();
++        let mut provider = seed_provider(project.path(), &source);
++        provider.add_file(project.path().join("AGENTS.md"));
++        provider.add_dir(project.path().join(".claude"));
++        provider.add_dir(project.path().join("docs"));
++        provider.add_file(crate::core::test_support::canonical_path(&notes_source));
++        init_project_with_provider(project.path(), &mut provider).unwrap();
++        for (identifier, alias) in [
++            ("writer", Some("writer-a")),
++            ("writer", Some("writer-b")),
++            ("notes", None),
++        ] {
++            link_project_with_provider_and_db(
++                project.path(),
++                &mut provider,
++                &resolution,
++                LinkItemRequest {
++                    identifier: identifier.into(),
++                    link_name_override: alias.map(str::to_string),
++                    target_dir_override: None,
++                },
++            )
++            .unwrap();
++        }
++        create_group(&resolution, "daily", None).unwrap();
++        add_group_items(&resolution, "daily", &["writer".into(), "notes".into()]).unwrap();
++        remove_group_items(&resolution, "daily", &["notes".into()]).unwrap();
++        let before_rename = fs::read(super::manifest_path(project.path())).unwrap();
++        let renamed =
++            rename_item(&resolution, LinkableItemType::Skill, "writer", "author").unwrap();
++        assert_eq!(renamed.id, writer.id);
++        assert_eq!(
++            fs::read(super::manifest_path(project.path())).unwrap(),
++            before_rename
++        );
++        let mut manifest = load_manifest(project.path()).unwrap();
++        assert_eq!(
++            manifest
++                .links
++                .iter()
++                .filter(|record| record.item_id == writer.id)
++                .count(),
++            2
++        );
++        // Even an infrastructure record sharing a member ID is outside group unlink.
++        manifest.links[0].item_id = writer.id.clone();
++        save_manifest(project.path(), &manifest).unwrap();
++        let harness_records: Vec<_> = manifest
++            .links
++            .iter()
++            .filter(|r| r.origin == LinkOrigin::Harness)
++            .cloned()
++            .collect();
++        let harness_entries: Vec<_> = harness_records
++            .iter()
++            .map(|r| provider.entry(&project.path().join(&r.link_path)).cloned())
++            .collect();
++        let report = unlink_group_project_with_provider_and_db(
++            project.path(),
++            &mut provider,
++            &resolution,
++            "daily",
++        )
++        .unwrap();
++        assert_eq!(report.outcomes.len(), 2);
++        assert!(provider
++            .entry(&project.path().join(".agents/skills/writer-a"))
++            .is_none());
++        assert!(provider
++            .entry(&project.path().join(".agents/skills/writer-b"))
++            .is_none());
++        let remaining = load_manifest(project.path()).unwrap();
++        assert_eq!(remaining.links.len(), 3);
++        assert!(remaining.links.iter().any(|r| r.item_name == "notes"));
++        let before_dry_run = fs::read(super::manifest_path(project.path())).unwrap();
++        let dry_run = unlink_project_with_provider_with_options(
++            project.path(),
++            &mut provider,
++            None,
++            UnlinkOptions { dry_run: true },
++        )
++        .unwrap();
++        assert_eq!(dry_run.outcomes.len(), 1);
++        assert_eq!(
++            fs::read(super::manifest_path(project.path())).unwrap(),
++            before_dry_run
++        );
++        let report = unlink_project_with_provider(project.path(), &mut provider, None).unwrap();
++        assert_eq!(report.outcomes.len(), 1);
++        assert_eq!(
++            load_manifest(project.path()).unwrap().links,
++            harness_records
++        );
++        for (record, entry) in harness_records.iter().zip(harness_entries) {
++            assert_eq!(
++                provider
++                    .entry(&project.path().join(&record.link_path))
++                    .cloned(),
++                entry
++            );
++        }
++    }
++
+     #[test]
+     fn group_link_and_unlink_reuse_project_link_flow() {
+         let temp_dir = TestDir::new("group-links");
+diff --git a/src/core/registry.rs b/src/core/registry.rs
+index 3c395e6..37ff6c3 100644
+--- a/src/core/registry.rs
++++ b/src/core/registry.rs
+@@ -315,7 +315,7 @@ fn find_item_with_connection(
+         SELECT id, kind, name, alias, source_path, source_kind, target_dir, description,
+                created_at, updated_at, source_type, source_ownership, repo_url, repo_commit
+         FROM linkable_items
+-        WHERE kind = ?1 AND (id = ?2 OR name = ?2 OR alias = ?2)
++        WHERE kind = ?1 AND (id = ?2 OR name = ?2)
+         ORDER BY name
+         "#,
+     )?;
+@@ -338,7 +338,7 @@ fn find_any_item_with_connection(
+             SELECT id, kind, name, alias, source_path, source_kind, target_dir, description,
+                    created_at, updated_at, source_type, source_ownership, repo_url, repo_commit
+             FROM linkable_items
+-            WHERE kind = ?1 AND (id = ?2 OR name = ?2 OR alias = ?2)
++            WHERE kind = ?1 AND (id = ?2 OR name = ?2)
+             ORDER BY name
+             "#,
+         )?;
+@@ -744,7 +744,7 @@ mod tests {
+     use super::{
+         add_group_items, add_item, create_group, delete_group, list_items, refresh_item,
+         remove_group_items, remove_item, rename_group, rename_item, show_group, show_item,
+-        AddLinkableItem, LinkableItemType,
++        AddLinkableItem, LinkableItemType, RegistryStore,
+     };
+     use crate::core::symlink::LinkKind;
+     use crate::core::test_support::TestDir;
+@@ -1002,6 +1002,133 @@ mod tests {
+         assert!(same_alias.to_string().contains("link name"));
+     }
+ 
++    #[test]
++    fn registry_identifiers_ignore_aliases_for_both_item_types() {
++        for item_type in [LinkableItemType::Skill, LinkableItemType::Resource] {
++            let temp = TestDir::new("identity-alias");
++            let resolution = resolution(temp.path());
++            migrate_database(&resolution).unwrap();
++            let register = |name: &str, alias: &str| {
++                let source = temp.path().join(name);
++                if item_type == LinkableItemType::Skill {
++                    fs::create_dir(&source).unwrap();
++                    fs::write(source.join("SKILL.md"), name).unwrap();
++                } else {
++                    fs::write(&source, name).unwrap();
++                }
++                add_item(
++                    &resolution,
++                    AddLinkableItem {
++                        item_type,
++                        name: name.into(),
++                        alias: Some(alias.into()),
++                        source_path: source,
++                        default_target_dir: (item_type == LinkableItemType::Resource)
++                            .then(|| PathBuf::from("docs")),
++                        description: None,
++                    },
++                )
++                .unwrap()
++            };
++            let alpha = register("alpha", "beta");
++            create_group(&resolution, "daily", None).unwrap();
++            let store = RegistryStore::open(&resolution).unwrap();
++            // Alias alone must fail before any mutation can select alpha.
++            assert!(show_item(&resolution, item_type, "beta").is_err());
++            assert!(store.find_any_item("beta").is_err());
++            assert!(rename_item(&resolution, item_type, "beta", "delta").is_err());
++            assert!(refresh_item(&resolution, item_type, "beta").is_err());
++            assert!(remove_item(&resolution, item_type, "beta").is_err());
++            assert!(add_group_items(&resolution, "daily", &["beta".into()]).is_err());
++            assert!(remove_group_items(&resolution, "daily", &["beta".into()]).is_err());
++            assert_eq!(store.find_item(item_type, &alpha.id).unwrap().id, alpha.id);
++            assert_eq!(store.find_any_item(&alpha.id).unwrap().id, alpha.id);
++            let beta = register("beta", "gamma");
++            assert_eq!(
++                show_item(&resolution, item_type, "beta").unwrap().id,
++                beta.id
++            );
++            assert_eq!(store.find_any_item("beta").unwrap().id, beta.id);
++            assert_eq!(
++                refresh_item(&resolution, item_type, "beta").unwrap().id,
++                beta.id
++            );
++            assert!(store.find_item(item_type, "gamma").is_err());
++            assert!(store.find_any_item("gamma").is_err());
++            assert_eq!(alpha.link_name(), "beta");
++            assert_eq!(beta.link_name(), "gamma");
++            let group =
++                add_group_items(&resolution, "daily", &[alpha.id.clone(), "beta".into()]).unwrap();
++            assert_eq!(group.items.len(), 2);
++            let group = remove_group_items(&resolution, "daily", &["beta".into()]).unwrap();
++            assert_eq!(group.items.len(), 1);
++            assert_eq!(group.items[0].id, alpha.id);
++            let renamed = rename_item(&resolution, item_type, "beta", "delta").unwrap();
++            assert_eq!(renamed.id, beta.id);
++            assert_eq!(renamed.name, "delta");
++            assert_eq!(renamed.alias, beta.alias);
++            assert_eq!(renamed.link_name(), "gamma");
++            assert_eq!(
++                rename_item(&resolution, item_type, "delta", "beta")
++                    .unwrap()
++                    .id,
++                beta.id
++            );
++            assert_eq!(
++                remove_item(&resolution, item_type, "beta").unwrap().id,
++                beta.id
++            );
++            assert_eq!(store.find_any_item("alpha").unwrap(), alpha);
++            assert!(store.find_any_item("beta").is_err());
++        }
++    }
++
++    #[test]
++    fn alias_of_another_type_does_not_make_name_lookup_ambiguous() {
++        let temp = TestDir::new("identity-cross-type");
++        let resolution = resolution(temp.path());
++        migrate_database(&resolution).unwrap();
++        let skill = temp.path().join("skill");
++        fs::create_dir(&skill).unwrap();
++        fs::write(skill.join("SKILL.md"), "alpha").unwrap();
++        add_item(
++            &resolution,
++            AddLinkableItem {
++                item_type: LinkableItemType::Skill,
++                name: "alpha".into(),
++                alias: Some("beta".into()),
++                source_path: skill,
++                default_target_dir: None,
++                description: None,
++            },
++        )
++        .unwrap();
++        let source = temp.path().join("resource.txt");
++        fs::write(&source, "beta").unwrap();
++        let beta = add_item(
++            &resolution,
++            AddLinkableItem {
++                item_type: LinkableItemType::Resource,
++                name: "beta".into(),
++                alias: None,
++                source_path: source,
++                default_target_dir: Some(PathBuf::from("docs")),
++                description: None,
++            },
++        )
++        .unwrap();
++        let store = RegistryStore::open(&resolution).unwrap();
++        assert_eq!(store.find_any_item("beta").unwrap().id, beta.id);
++        create_group(&resolution, "daily", None).unwrap();
++        assert_eq!(
++            add_group_items(&resolution, "daily", &["beta".into()])
++                .unwrap()
++                .items[0]
++                .id,
++            beta.id
++        );
++    }
++
+     #[test]
+     fn rename_and_refresh_do_not_change_source_contents() {
+         let temp_dir = TestDir::new("rename-refresh");
+diff --git a/src/core/symlink.rs b/src/core/symlink.rs
+index 71b857c..a0aa3ab 100644
+--- a/src/core/symlink.rs
++++ b/src/core/symlink.rs
+@@ -276,6 +276,10 @@ pub trait SymlinkProvider {
+ 
+     fn create_symlink(&mut self, source: &Path, link: &Path, kind: LinkKind) -> SymlinkResult<()>;
+ 
++    /// Replace an existing symlink without removing it before its replacement is ready.
++    /// Reject real paths and validate the new source before changing the old link.
++    fn replace_symlink(&mut self, source: &Path, link: &Path, kind: LinkKind) -> SymlinkResult<()>;
++
+     fn remove_symlink(&mut self, link: &Path) -> SymlinkResult<RemoveSymlinkOutcome>;
+ 
+     fn read_link(&self, link: &Path) -> SymlinkResult<PathBuf>;
+@@ -307,8 +311,11 @@ pub fn ensure_symlink(
+                 .with_detail(format!("existing link points to {}", actual.display())));
+             }
+ 
+-            provider.remove_symlink(link)?;
+-            provider.create_symlink(source, link, kind)?;
++            provider.replace_symlink(source, link, kind)?;
++            Ok(CreateSymlinkOutcome::ReplacedWrongSymlink)
++        }
++        LinkStatus::BrokenSymlink { .. } if options.force => {
++            provider.replace_symlink(source, link, kind)?;
+             Ok(CreateSymlinkOutcome::ReplacedWrongSymlink)
+         }
+         LinkStatus::BrokenSymlink { target } => Err(SymlinkError::new(
+@@ -388,6 +395,13 @@ impl SymlinkProvider for StdSymlinkProvider {
+         create_std_symlink(source, link, kind, self.backend)
+     }
+ 
++    fn replace_symlink(&mut self, source: &Path, link: &Path, kind: LinkKind) -> SymlinkResult<()> {
++        validate_source(source, kind, self.backend)?;
++        validate_link_parent(link, self.backend)?;
++        require_fs_symlink(link, self.backend)?;
++        replace_std_symlink(source, link, kind, self.backend)
++    }
++
+     fn remove_symlink(&mut self, link: &Path) -> SymlinkResult<RemoveSymlinkOutcome> {
+         remove_fs_symlink(link, self.backend)
+     }
+@@ -416,40 +430,34 @@ impl SymlinkProvider for WindowsBrokerSymlinkProvider {
+     }
+ 
+     fn create_symlink(&mut self, source: &Path, link: &Path, kind: LinkKind) -> SymlinkResult<()> {
+-        #[cfg(windows)]
+-        {
+-            validate_source(source, kind, SymlinkBackend::WindowsBroker)?;
+-            validate_link_parent(link, SymlinkBackend::WindowsBroker)?;
+-            reject_existing_link_path(link, SymlinkBackend::WindowsBroker)?;
++        self.write_symlink(source, link, kind, false)
++    }
+ 
+-            let options = BrokerCreateSymlinkOptions::new(source, link)
+-                .target_kind(broker_target_kind(kind))
+-                .replace_existing_symlink(false);
++    fn replace_symlink(&mut self, source: &Path, link: &Path, kind: LinkKind) -> SymlinkResult<()> {
++        self.write_symlink(source, link, kind, true)
++    }
+ 
+-            create_symlink_via_broker(options).map_err(|error| {
+-                broker_error_to_symlink_error(error)
+-                    .with_source(source)
+-                    .with_link(link)
+-            })
++    fn remove_symlink(&mut self, link: &Path) -> SymlinkResult<RemoveSymlinkOutcome> {
++        #[cfg(windows)]
++        {
++            remove_fs_symlink(link, SymlinkBackend::WindowsBroker)
+         }
+ 
+         #[cfg(not(windows))]
+         {
+-            let _ = kind;
+             Err(SymlinkError::new(
+                 SymlinkErrorKind::UnsupportedPlatform,
+                 SymlinkBackend::WindowsBroker,
+             )
+-            .with_source(source)
+             .with_link(link)
+             .with_detail("Windows Broker provider is only available on Windows"))
+         }
+     }
+ 
+-    fn remove_symlink(&mut self, link: &Path) -> SymlinkResult<RemoveSymlinkOutcome> {
++    fn read_link(&self, link: &Path) -> SymlinkResult<PathBuf> {
+         #[cfg(windows)]
+         {
+-            remove_fs_symlink(link, SymlinkBackend::WindowsBroker)
++            read_fs_link(link, SymlinkBackend::WindowsBroker)
+         }
+ 
+         #[cfg(not(windows))]
+@@ -463,14 +471,15 @@ impl SymlinkProvider for WindowsBrokerSymlinkProvider {
+         }
+     }
+ 
+-    fn read_link(&self, link: &Path) -> SymlinkResult<PathBuf> {
++    fn link_status(&self, source: &Path, link: &Path, kind: LinkKind) -> SymlinkResult<LinkStatus> {
+         #[cfg(windows)]
+         {
+-            read_fs_link(link, SymlinkBackend::WindowsBroker)
++            fs_link_status(source, link, kind, SymlinkBackend::WindowsBroker)
+         }
+ 
+         #[cfg(not(windows))]
+         {
++            let _ = (source, kind);
+             Err(SymlinkError::new(
+                 SymlinkErrorKind::UnsupportedPlatform,
+                 SymlinkBackend::WindowsBroker,
+@@ -479,20 +488,45 @@ impl SymlinkProvider for WindowsBrokerSymlinkProvider {
+             .with_detail("Windows Broker provider is only available on Windows"))
+         }
+     }
++}
+ 
+-    fn link_status(&self, source: &Path, link: &Path, kind: LinkKind) -> SymlinkResult<LinkStatus> {
++impl WindowsBrokerSymlinkProvider {
++    fn write_symlink(
++        &mut self,
++        source: &Path,
++        link: &Path,
++        kind: LinkKind,
++        replace: bool,
++    ) -> SymlinkResult<()> {
+         #[cfg(windows)]
+         {
+-            fs_link_status(source, link, kind, SymlinkBackend::WindowsBroker)
++            validate_source(source, kind, SymlinkBackend::WindowsBroker)?;
++            validate_link_parent(link, SymlinkBackend::WindowsBroker)?;
++            if replace {
++                require_fs_symlink(link, SymlinkBackend::WindowsBroker)?;
++            } else {
++                reject_existing_link_path(link, SymlinkBackend::WindowsBroker)?;
++            }
++
++            let options = BrokerCreateSymlinkOptions::new(source, link)
++                .target_kind(broker_target_kind(kind))
++                .replace_existing_symlink(replace);
++
++            create_symlink_via_broker(options).map_err(|error| {
++                broker_error_to_symlink_error(error)
++                    .with_source(source)
++                    .with_link(link)
++            })
+         }
+ 
+         #[cfg(not(windows))]
+         {
+-            let _ = (source, kind);
++            let _ = (kind, replace);
+             Err(SymlinkError::new(
+                 SymlinkErrorKind::UnsupportedPlatform,
+                 SymlinkBackend::WindowsBroker,
+             )
++            .with_source(source)
+             .with_link(link)
+             .with_detail("Windows Broker provider is only available on Windows"))
+         }
+@@ -547,6 +581,7 @@ pub enum MockEntry {
+ #[derive(Debug, Clone, Default)]
+ pub struct MockSymlinkProvider {
+     entries: BTreeMap<PathBuf, MockEntry>,
++    fail_next_replacement: bool,
+ }
+ 
+ impl MockSymlinkProvider {
+@@ -585,6 +620,27 @@ impl MockSymlinkProvider {
+         self.entries.get(path)
+     }
+ 
++    pub fn fail_next_replacement(&mut self) {
++        self.fail_next_replacement = true;
++    }
++
++    fn validate_source(&self, source: &Path, kind: LinkKind) -> SymlinkResult<()> {
++        if !self.entries.contains_key(source) {
++            return Err(
++                SymlinkError::new(SymlinkErrorKind::SourceNotFound, self.backend())
++                    .with_source(source),
++            );
++        }
++        if !self.source_matches_kind(source, kind) {
++            return Err(
++                SymlinkError::new(SymlinkErrorKind::UnsupportedLinkKind, self.backend())
++                    .with_source(source)
++                    .with_detail(format!("source is not a {kind}")),
++            );
++        }
++        Ok(())
++    }
++
+     fn source_matches_kind(&self, source: &Path, kind: LinkKind) -> bool {
+         matches!(
+             (self.entries.get(source), kind),
+@@ -611,23 +667,8 @@ impl SymlinkProvider for MockSymlinkProvider {
+     }
+ 
+     fn create_symlink(&mut self, source: &Path, link: &Path, kind: LinkKind) -> SymlinkResult<()> {
+-        if !self.entries.contains_key(source) {
+-            return Err(
+-                SymlinkError::new(SymlinkErrorKind::SourceNotFound, SymlinkBackend::Mock)
+-                    .with_source(source)
+-                    .with_link(link),
+-            );
+-        }
+-
+-        if !self.source_matches_kind(source, kind) {
+-            return Err(SymlinkError::new(
+-                SymlinkErrorKind::UnsupportedLinkKind,
+-                SymlinkBackend::Mock,
+-            )
+-            .with_source(source)
+-            .with_link(link)
+-            .with_detail(format!("source is not a {kind}")));
+-        }
++        self.validate_source(source, kind)
++            .map_err(|error| error.with_link(link))?;
+ 
+         if !self.parent_exists(link) {
+             return Err(SymlinkError::new(
+@@ -651,6 +692,21 @@ impl SymlinkProvider for MockSymlinkProvider {
+         Ok(())
+     }
+ 
++    fn replace_symlink(&mut self, source: &Path, link: &Path, kind: LinkKind) -> SymlinkResult<()> {
++        self.validate_source(source, kind)
++            .map_err(|error| error.with_link(link))?;
++        // read_link rejects real files/directories and absent paths without changing them.
++        self.read_link(link)?;
++        if std::mem::take(&mut self.fail_next_replacement) {
++            return Err(SymlinkError::new(SymlinkErrorKind::Io, self.backend())
++                .with_source(source)
++                .with_link(link)
++                .with_detail("injected replacement failure"));
++        }
++        self.add_symlink(link.to_path_buf(), source.to_path_buf(), kind);
++        Ok(())
++    }
++
+     fn remove_symlink(&mut self, link: &Path) -> SymlinkResult<RemoveSymlinkOutcome> {
+         match self.entries.get(link) {
+             None => Ok(RemoveSymlinkOutcome::Missing),
+@@ -799,6 +855,59 @@ fn reject_existing_link_path(link: &Path, backend: SymlinkBackend) -> SymlinkRes
+     }
+ }
+ 
++fn require_fs_symlink(link: &Path, backend: SymlinkBackend) -> SymlinkResult<()> {
++    let metadata = fs::symlink_metadata(link)
++        .map_err(|error| io_to_symlink_error(error, backend).with_link(link))?;
++    if metadata.file_type().is_symlink() {
++        return Ok(());
++    }
++    let kind = if metadata.is_file() {
++        SymlinkErrorKind::ExistingRealFile
++    } else if metadata.is_dir() {
++        SymlinkErrorKind::ExistingRealDirectory
++    } else {
++        SymlinkErrorKind::UnsupportedLinkKind
++    };
++    Err(SymlinkError::new(kind, backend).with_link(link))
++}
++
++fn replace_std_symlink(
++    source: &Path,
++    link: &Path,
++    kind: LinkKind,
++    backend: SymlinkBackend,
++) -> SymlinkResult<()> {
++    use std::sync::atomic::{AtomicU64, Ordering};
++    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
++
++    let parent = link.parent().unwrap_or_else(|| Path::new("."));
++    loop {
++        let temporary = parent.join(format!(
++            ".aglink-symlink-{}-{}.tmp",
++            std::process::id(),
++            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
++        ));
++        // Creating the temporary symlink itself reserves its name without clobbering.
++        match create_std_symlink(source, &temporary, kind, backend) {
++            Err(_) if fs::symlink_metadata(&temporary).is_ok() => continue,
++            Err(error) => return Err(error.with_link(link)),
++            Ok(()) => {}
++        }
++        let result = require_fs_symlink(link, backend).and_then(|()| {
++            fs::rename(&temporary, link).map_err(|error| {
++                io_to_symlink_error(error, backend)
++                    .with_source(source)
++                    .with_link(link)
++            })
++        });
++        if result.is_err() {
++            // Only the staged symlink belongs to us; never remove the destination here.
++            let _ = remove_fs_symlink(&temporary, backend);
++        }
++        return result;
++    }
++}
++
+ fn metadata_matches_kind(metadata: &fs::Metadata, kind: LinkKind) -> bool {
+     match kind {
+         LinkKind::File => metadata.is_file(),
+@@ -1280,6 +1389,106 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn force_replaces_live_and_dangling_wrong_targets_and_failure_keeps_old_link() {
++        for old_exists in [true, false] {
++            for fail in [true, false] {
++                let mut provider = base_mock();
++                let source = path("project/new.md");
++                let old = path("project/old.md");
++                let link = path("project/link.md");
++                provider.add_file(&source);
++                if old_exists {
++                    provider.add_file(&old);
++                }
++                provider.add_symlink(&link, &old, LinkKind::File);
++                assert_eq!(
++                    ensure_symlink(
++                        &mut provider,
++                        &source,
++                        &link,
++                        LinkKind::File,
++                        CreateSymlinkOptions::new()
++                    )
++                    .unwrap_err()
++                    .kind(),
++                    SymlinkErrorKind::WrongSymlinkTarget
++                );
++                assert_eq!(provider.read_link(&link).unwrap(), old);
++                if fail {
++                    provider.fail_next_replacement();
++                }
++                let result = ensure_symlink(
++                    &mut provider,
++                    &source,
++                    &link,
++                    LinkKind::File,
++                    CreateSymlinkOptions::force_wrong_symlink(),
++                );
++                if fail {
++                    assert_eq!(result.unwrap_err().kind(), SymlinkErrorKind::Io);
++                    assert_eq!(provider.read_link(&link).unwrap(), old);
++                } else {
++                    assert_eq!(result.unwrap(), CreateSymlinkOutcome::ReplacedWrongSymlink);
++                    assert_eq!(provider.read_link(&link).unwrap(), source);
++                }
++            }
++        }
++    }
++
++    #[test]
++    fn replacement_validates_new_source_and_preserves_old_link() {
++        let mut provider = base_mock();
++        let source = path("project/new.md");
++        let old = path("project/old.md");
++        let link = path("project/link.md");
++        provider.add_file(&old);
++        provider.add_symlink(&link, &old, LinkKind::File);
++        assert_eq!(
++            ensure_symlink(
++                &mut provider,
++                &source,
++                &link,
++                LinkKind::File,
++                CreateSymlinkOptions::force_wrong_symlink(),
++            )
++            .unwrap_err()
++            .kind(),
++            SymlinkErrorKind::SourceNotFound
++        );
++        assert_eq!(provider.read_link(&link).unwrap(), old);
++        provider.add_dir(&source);
++        assert_eq!(
++            provider
++                .replace_symlink(&source, &link, LinkKind::File)
++                .unwrap_err()
++                .kind(),
++            SymlinkErrorKind::UnsupportedLinkKind
++        );
++        assert_eq!(provider.read_link(&link).unwrap(), old);
++        provider.add_file(&source);
++        for directory in [false, true] {
++            if directory {
++                provider.add_dir(&link);
++            } else {
++                provider.add_file(&link);
++            }
++            let before = provider.entry(&link).cloned();
++            assert_eq!(
++                provider
++                    .replace_symlink(&source, &link, LinkKind::File)
++                    .unwrap_err()
++                    .kind(),
++                if directory {
++                    SymlinkErrorKind::ExistingRealDirectory
++                } else {
++                    SymlinkErrorKind::ExistingRealFile
++                }
++            );
++            assert_eq!(provider.entry(&link), before.as_ref());
++        }
++    }
++
+     #[test]
+     fn force_never_deletes_real_file_or_directory() {
+         let mut file_provider = base_mock();
+@@ -1430,6 +1639,14 @@ mod tests {
+                 ErrorCode::LinkPathIsNotSymlink,
+                 SymlinkErrorKind::WrongSymlinkTarget,
+             ),
++            (
++                ErrorCode::UnsafeReparsePoint,
++                SymlinkErrorKind::WrongSymlinkTarget,
++            ),
++            (
++                ErrorCode::ReplacementPartiallyCompleted,
++                SymlinkErrorKind::WrongSymlinkTarget,
++            ),
+             (
+                 ErrorCode::TargetKindConflict,
+                 SymlinkErrorKind::UnsupportedLinkKind,
+@@ -1485,6 +1702,188 @@ mod tests {
+         );
+     }
+ 
++    #[cfg(unix)]
++    #[test]
++    fn std_replacement_renames_same_directory_symlink_and_preserves_real_paths() {
++        for kind in [LinkKind::File, LinkKind::Directory] {
++            let temp = TestDir::new();
++            let source = temp.path().join("source");
++            let old = temp.path().join("old");
++            let link = temp.path().join("link");
++            match kind {
++                LinkKind::File => fs::write(&source, "new source").unwrap(),
++                LinkKind::Directory => fs::create_dir(&source).unwrap(),
++            }
++            let mut provider = StdSymlinkProvider::new();
++            // A dangling old target can be replaced without deleting the link first.
++            std::os::unix::fs::symlink(&old, &link).unwrap();
++            assert_eq!(
++                ensure_symlink(
++                    &mut provider,
++                    &source,
++                    &link,
++                    kind,
++                    CreateSymlinkOptions::new()
++                )
++                .unwrap_err()
++                .kind(),
++                SymlinkErrorKind::WrongSymlinkTarget
++            );
++            assert_eq!(
++                ensure_symlink(
++                    &mut provider,
++                    &source,
++                    &link,
++                    kind,
++                    CreateSymlinkOptions::force_wrong_symlink()
++                )
++                .unwrap(),
++                CreateSymlinkOutcome::ReplacedWrongSymlink
++            );
++            assert_eq!(fs::read_link(&link).unwrap(), source);
++            assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 2);
++            assert_eq!(
++                provider
++                    .replace_symlink(&old, &link, kind)
++                    .unwrap_err()
++                    .kind(),
++                SymlinkErrorKind::SourceNotFound
++            );
++            assert_eq!(fs::read_link(&link).unwrap(), source);
++            provider.remove_symlink(&link).unwrap();
++            fs::write(&link, "user data").unwrap();
++            assert_eq!(
++                provider
++                    .replace_symlink(&source, &link, kind)
++                    .unwrap_err()
++                    .kind(),
++                SymlinkErrorKind::ExistingRealFile
++            );
++            assert_eq!(fs::read_to_string(&link).unwrap(), "user data");
++            fs::remove_file(&link).unwrap();
++            fs::create_dir(&link).unwrap();
++            fs::write(link.join("keep"), "user data").unwrap();
++            assert_eq!(
++                provider
++                    .replace_symlink(&source, &link, kind)
++                    .unwrap_err()
++                    .kind(),
++                SymlinkErrorKind::ExistingRealDirectory
++            );
++            assert_eq!(fs::read_to_string(link.join("keep")).unwrap(), "user data");
++        }
++    }
++
++    #[cfg(windows)]
++    #[test]
++    #[ignore = "requires running WinSymlinksBroker; run serially with --ignored --test-threads=1"]
++    fn broker_native_replacement_and_error_codes() {
++        use super::{
++            broker_target_kind, create_symlink_via_broker, BrokerCreateSymlinkOptions,
++            WindowsBrokerSymlinkProvider,
++        };
++        use crate::core::test_support::TestDir;
++        use std::fs;
++
++        for kind in [LinkKind::File, LinkKind::Directory] {
++            for dangling in [false, true] {
++                let temp = TestDir::new("broker-replace");
++                let old = temp.path().join("old");
++                let source = temp.path().join("source");
++                let link = temp.path().join("link");
++                match kind {
++                    LinkKind::File => {
++                        fs::write(&old, "old").unwrap();
++                        fs::write(&source, "new").unwrap();
++                    }
++                    LinkKind::Directory => {
++                        fs::create_dir(&old).unwrap();
++                        fs::create_dir(&source).unwrap();
++                    }
++                }
++                let mut provider = WindowsBrokerSymlinkProvider::new();
++                provider.create_symlink(&old, &link, kind).unwrap();
++                let error = create_symlink_via_broker(
++                    BrokerCreateSymlinkOptions::new(&source, &link)
++                        .target_kind(broker_target_kind(kind))
++                        .replace_existing_symlink(false),
++                )
++                .unwrap_err();
++                assert_eq!(error.code(), ErrorCode::LinkAlreadyExists);
++                assert_eq!(
++                    broker_error_to_symlink_error(error).broker_code(),
++                    Some("LINK_ALREADY_EXISTS")
++                );
++                if dangling {
++                    match kind {
++                        LinkKind::File => fs::remove_file(&old).unwrap(),
++                        LinkKind::Directory => fs::remove_dir(&old).unwrap(),
++                    }
++                }
++                assert_eq!(
++                    ensure_symlink(
++                        &mut provider,
++                        &source,
++                        &link,
++                        kind,
++                        CreateSymlinkOptions::new()
++                    )
++                    .unwrap_err()
++                    .kind(),
++                    SymlinkErrorKind::WrongSymlinkTarget
++                );
++                assert_eq!(
++                    ensure_symlink(
++                        &mut provider,
++                        &source,
++                        &link,
++                        kind,
++                        CreateSymlinkOptions::force_wrong_symlink()
++                    )
++                    .unwrap(),
++                    CreateSymlinkOutcome::ReplacedWrongSymlink
++                );
++                assert!(matches!(
++                    provider.link_status(&source, &link, kind).unwrap(),
++                    LinkStatus::CorrectSymlink { .. }
++                ));
++                let before = provider.read_link(&link).unwrap();
++                assert_eq!(
++                    provider
++                        .replace_symlink(&old.with_file_name("missing"), &link, kind)
++                        .unwrap_err()
++                        .kind(),
++                    SymlinkErrorKind::SourceNotFound
++                );
++                assert_eq!(provider.read_link(&link).unwrap(), before);
++                provider.remove_symlink(&link).unwrap();
++                for directory in [false, true] {
++                    if directory {
++                        fs::create_dir(&link).unwrap();
++                    } else {
++                        fs::write(&link, "user data").unwrap();
++                    }
++                    let error = create_symlink_via_broker(
++                        BrokerCreateSymlinkOptions::new(&source, &link)
++                            .target_kind(broker_target_kind(kind))
++                            .replace_existing_symlink(true),
++                    )
++                    .unwrap_err();
++                    assert_eq!(error.code(), ErrorCode::LinkPathIsNotSymlink);
++                    let mapped = broker_error_to_symlink_error(error);
++                    assert_eq!(mapped.kind(), SymlinkErrorKind::WrongSymlinkTarget);
++                    assert_eq!(mapped.broker_code(), Some("LINK_PATH_IS_NOT_SYMLINK"));
++                    if directory {
++                        fs::remove_dir(&link).unwrap();
++                    } else {
++                        assert_eq!(fs::read_to_string(&link).unwrap(), "user data");
++                        fs::remove_file(&link).unwrap();
++                    }
++                }
++            }
++        }
++    }
++
+     #[cfg(unix)]
+     struct TestDir {
+         path: PathBuf,
