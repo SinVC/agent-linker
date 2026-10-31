@@ -3,6 +3,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    io::Write,
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -26,14 +27,29 @@ const MANIFEST_VERSION: u32 = 1;
 const MANIFEST_PATH: &str = ".agents/links.toml";
 const MANAGED_GITIGNORE_BEGIN: &str = "# BEGIN aglink managed";
 const MANAGED_GITIGNORE_END: &str = "# END aglink managed";
-const MANAGED_GITIGNORE_PATTERNS: &[&str] = &[".claude/", ".agents/skills/", ".agents/links.toml"];
+const MANAGED_GITIGNORE_PATTERNS: &[&str] = &[".claude/", ".agents/"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkOrigin {
+    Harness,
+    Item,
+}
+
+impl LinkOrigin {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Harness => "harness",
+            Self::Item => "item",
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkRecord {
     pub id: String,
-    pub scope: String,
-    /// Serialized as `framework_name` in manifest schema 1 for compatibility.
-    pub harness_name: String,
+    pub origin: LinkOrigin,
+    /// Present only for Harness links; serialized as `framework_name` in schema 1.
+    pub harness_name: Option<String>,
     pub item_id: String,
     pub item_name: String,
     pub source_path: PathBuf,
@@ -71,8 +87,15 @@ impl Manifest {
         let mut seen_paths = BTreeSet::new();
         for link in &self.links {
             require_non_empty("id", &link.id)?;
-            require_non_empty("scope", &link.scope)?;
-            require_non_empty("framework_name", &link.harness_name)?;
+            match (link.origin, link.harness_name.as_deref()) {
+                (LinkOrigin::Harness, Some(name)) => require_non_empty("framework_name", name)?,
+                (LinkOrigin::Item, None) => {}
+                _ => {
+                    return Err(Error::manifest(
+                        "only harness links must have a framework_name",
+                    ))
+                }
+            }
             require_non_empty("item_id", &link.item_id)?;
             require_non_empty("item_name", &link.item_name)?;
             require_non_empty("created_by_command", &link.created_by_command)?;
@@ -253,6 +276,20 @@ pub fn load_manifest(project_root: &Path) -> Result<Manifest> {
 }
 
 pub fn save_manifest(project_root: &Path, manifest: &Manifest) -> Result<()> {
+    save_manifest_with_io(
+        project_root,
+        manifest,
+        |file, content| file.write_all(content),
+        |source, destination| fs::rename(source, destination),
+    )
+}
+
+fn save_manifest_with_io(
+    project_root: &Path,
+    manifest: &Manifest,
+    write: impl FnOnce(&mut fs::File, &[u8]) -> std::io::Result<()>,
+    rename: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> Result<()> {
     manifest.validate()?;
     validate_project_paths(project_root, manifest)?;
 
@@ -273,8 +310,23 @@ pub fn save_manifest(project_root: &Path, manifest: &Manifest) -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
+    let temporary = resolve_managed_project_path(
+        project_root,
+        &PathBuf::from(".agents").join(format!(".links.toml.tmp.{}", std::process::id())),
+    )?;
     fs::create_dir_all(parent)?;
-    fs::write(path, serialize_manifest(manifest))?;
+    // Never follow or overwrite an existing temporary leaf, including symlinks.
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
+    let written = write(&mut file, serialize_manifest(manifest).as_bytes());
+    drop(file);
+    let result = written.and_then(|_| rename(&temporary, &path));
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result?;
     Ok(())
 }
 
@@ -296,7 +348,10 @@ fn ensure_harness_parent_dirs(
     let mut parents = BTreeSet::new();
     for mapping in mappings {
         if let Some(parent) = mapping.link_path.parent() {
-            if !parent.as_os_str().is_empty() {
+            if parent
+                .components()
+                .any(|part| matches!(part, std::path::Component::Normal(_)))
+            {
                 parents.insert(parent.to_path_buf());
             }
         }
@@ -426,17 +481,8 @@ fn replace_or_append_managed_block(original: &str, block: &str) -> Result<String
             let after_end = end + MANAGED_GITIGNORE_END.len();
             let mut updated = String::new();
             updated.push_str(&original[..begin]);
-            if !updated.is_empty() && !updated.ends_with('\n') {
-                updated.push('\n');
-            }
-            updated.push_str(block);
-            let remainder = original[after_end..].trim_start_matches(['\r', '\n']);
-            if !remainder.is_empty() {
-                updated.push_str(remainder);
-                if !updated.ends_with('\n') {
-                    updated.push('\n');
-                }
-            }
+            updated.push_str(block.trim_end_matches('\n'));
+            updated.push_str(&original[after_end..]);
             Ok(updated)
         }
         (None, None) => {
@@ -461,8 +507,8 @@ fn record_from_mapping(mapping: &HarnessMapping, backend: SymlinkBackend) -> Lin
 
     LinkRecord {
         id: mapping.id.to_string(),
-        scope: "project".to_string(),
-        harness_name: mapping.harness_name.to_string(),
+        origin: LinkOrigin::Harness,
+        harness_name: Some(mapping.harness_name.to_string()),
         item_id: mapping.item_id.to_string(),
         item_name: mapping.item_name.to_string(),
         source_path: mapping.source_path.clone(),
@@ -482,8 +528,10 @@ fn serialize_manifest(manifest: &Manifest) -> String {
         output.push('\n');
         output.push_str("[[links]]\n");
         push_kv(&mut output, "id", &link.id);
-        push_kv(&mut output, "scope", &link.scope);
-        push_kv(&mut output, "framework_name", &link.harness_name);
+        push_kv(&mut output, "origin", link.origin.as_str());
+        if let Some(name) = &link.harness_name {
+            push_kv(&mut output, "framework_name", name);
+        }
         push_kv(&mut output, "item_id", &link.item_id);
         push_kv(&mut output, "item_name", &link.item_name);
         push_kv(
@@ -608,10 +656,26 @@ fn parse_string_value(value: &str, line_number: usize) -> Result<String> {
 
 fn link_from_table(mut table: BTreeMap<String, String>) -> Result<LinkRecord> {
     let id = required_field(&mut table, "id")?;
+    // Legacy scope was always project; origin replaces the registry sentinel.
+    table.remove("scope");
+    let mut harness_name = table.remove("framework_name");
+    let origin = match table.remove("origin").as_deref() {
+        Some("harness") => LinkOrigin::Harness,
+        Some("item") => LinkOrigin::Item,
+        Some(value) => return Err(Error::manifest(format!("unknown origin `{value}`"))),
+        None => match harness_name.as_deref() {
+            Some("registry") => {
+                harness_name = None;
+                LinkOrigin::Item
+            }
+            Some(_) => LinkOrigin::Harness,
+            None => return Err(Error::manifest("manifest link is missing `origin`")),
+        },
+    };
     let link = LinkRecord {
         id,
-        scope: required_field(&mut table, "scope")?,
-        harness_name: required_field(&mut table, "framework_name")?,
+        origin,
+        harness_name,
         item_id: required_field(&mut table, "item_id")?,
         item_name: required_field(&mut table, "item_name")?,
         source_path: PathBuf::from(required_field(&mut table, "source_path")?),

@@ -26,7 +26,7 @@ Windows 默认 Provider 归 Symlink Core 所有，必须通过 `WinSymlinksBroke
 - Rust 实现优先通过 `win-symlinks-client` 的 broker-only 能力接入；不应先尝试直接创建再自动回退。
 - 非 Rust 或兼容实现只能使用已文档化的本地 Named Pipe 协议，并必须验证连接的 pipe server 是已安装的 `WinSymlinksBroker` 服务进程。
 - `create_symlink(source, link, kind)` 在 Broker 请求中映射为 target path、link path 和 target kind；Symlink Core 已知链接类型时必须显式传入 `file` 或 `directory`。
-- `replace_existing_symlink` 只能在调用方明确启用 `--force` 且 `link_status` 已确认目标是错误 symlink 时使用。
+- 普通创建请求固定 `replace_existing_symlink = false`；替换请求固定为 `true`，只能在调用方明确启用 `--force` 且 `link_status` 已确认目标是 `wrong_symlink_target` 或 `broken_symlink` 时使用。替换前校验新 source 存在且 kind 合法，并再次拒绝真实文件或目录。
 - Broker 后端只能创建真实 symlink，不允许退化为 junction、hardlink、文件或目录复制、`.lnk` 快捷方式。
 - Broker 返回的稳定错误码必须保留在诊断信息中，并映射到 Symlink Core 的结构化错误分类；CLI 不解析 Broker 文案。
 
@@ -35,6 +35,7 @@ Windows 默认 Provider 归 Symlink Core 所有，必须通过 `WinSymlinksBroke
 Symlink Provider 必须提供以下能力：
 
 - `create_symlink(source, link, kind)`：创建指定类型的 symlink。
+- `replace_symlink(source, link, kind)`：校验新 source 和已有 symlink 后由 Provider 替换；上层不得先删除再创建。Unix Std 在 link 同目录创建临时 symlink，再以 `fs::rename` 原子覆盖；创建或 rename 失败保留旧链并清理本次临时链接。Windows 默认使用 Broker 原生替换，不新增后端或自动 fallback；显式 Std fallback 也采用同目录临时链接与 rename，系统不支持覆盖时返回错误并保留旧链。
 - `remove_symlink(link)`：删除 symlink。
 - `read_link(link)`：读取 symlink 指向。
 - `link_status(source, link, kind)`：检查 link 相对 source 的状态。
@@ -73,8 +74,8 @@ Symlink Provider 必须提供以下能力：
 
 - 核心库依赖结构化 API 或 IPC，不依赖命令行文本协议。
 - 链接创建必须幂等：正确链接视为成功，错误链接默认报错。
-- `--force` 只允许替换错误 symlink，不允许删除真实文件或真实目录。
-- 断链按记录目标判断：目标一致但 source 缺失时报告 source 缺失，目标不一致时按错误 symlink 处理。
+- `--force` 允许替换 `wrong_symlink_target` 或 `broken_symlink`，新 source 必须存在且 kind 合法；不允许删除真实文件或真实目录。Mock 支持替换故障注入，失败保留旧链。
+- 断链仍按记录目标判断：目标一致但 source 缺失时报告 source 缺失，force 不绕过新 source 校验；目标不一致时按错误 symlink 处理，有效新 source 可在 force 下替换缺失的旧目标。
 - link 父目录默认不隐式创建，是否创建由调用场景决定。
 - Windows Broker 不可用时必须返回可诊断的结构化错误。
 
@@ -84,6 +85,7 @@ Symlink Provider 必须提供以下能力：
 - Windows 默认路径不绕过 Broker。
 - Windows 默认路径使用 Broker IPC，不使用直接创建后自动 fallback 的客户端路径。
 - 真实文件或真实目录不会被 `--force` 删除。
+- 错误目标及断链在无 force 时拒绝、在有效新 source 和 force 下替换；缺失或 kind 不合法的新 source 不能使旧链丢失。替换失败以故障注入验证保留旧链；Unix rename 与 Windows Broker 原生替换分别用真实平台测试验证。
 - CLI 能将结构化错误转换为简洁、可执行的用户提示。
 - `--verbose` 能展示后端、系统错误码和 Broker 诊断信息。
 - Windows Broker 错误码映射使用 mock 或 fixture 覆盖，真实 Broker 后端使用独立集成测试。

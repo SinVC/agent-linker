@@ -290,7 +290,7 @@ fn create_group_with_connection(
         params![id, name, description, now],
     )?;
 
-    find_group_with_connection(connection, name)
+    find_group_with_connection(connection, &id)
 }
 
 fn find_group_with_connection(connection: &Connection, identifier: &str) -> Result<Group> {
@@ -329,7 +329,7 @@ fn rename_group_with_connection(
         params![group.id, new_name, timestamp()],
     )?;
 
-    find_group_with_connection(connection, new_name)
+    find_group_with_connection(connection, &group.id)
 }
 
 fn delete_group_with_connection(connection: &Connection, identifier: &str) -> Result<Group> {

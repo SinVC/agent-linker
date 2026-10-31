@@ -4,14 +4,17 @@
 
 ## 本步结果与边界
 
-将已有 symlink 的替换下沉至 Provider，修复新建失败丢旧链以及有效新 source 不能替换断链的问题。共享纯判定函数和选项简化留给 15。
+将已有 symlink 的替换下沉至 Provider，修复新建失败丢旧链，并验证有效新 source 可以替换指向缺失旧目标的链接。当前 Provider 将目标不同的旧断链归类为 WrongSymlinkTarget；不把 BrokenSymlink 分支报错泛化为断链均无法替换。共享纯判定函数和选项简化留给 15。
 
 ## 代码入口
 
-- [SymlinkProvider 与 ensure_symlink](../../src/core/symlink.rs#L274)。
-- [Std Provider](../../src/core/symlink.rs#L379)、[Windows Broker Provider](../../src/core/symlink.rs#L413)、[Mock Provider](../../src/core/symlink.rs#L608)。
-- [validate_source](../../src/core/symlink.rs#L745)、[平台创建](../../src/core/symlink.rs#L809)、[force 测试](../../src/core/symlink.rs#L1254)。
-- [现有 dry-run 判定](../../src/core/project_links.rs#L987)、[项目 force 回归](../../src/core/project_links.rs#L1386)。
+- [Provider 与 ensure_symlink](../../src/core/symlink.rs#L274)。
+- [Std 替换](../../src/core/symlink.rs#L874)。
+- [Broker 替换请求](../../src/core/symlink.rs#L494)。
+- [Mock 故障注入](../../src/core/symlink.rs#L623)。
+- [项目 dry-run 判定](../../src/core/project_links.rs#L998)。
+- [项目失败保链测试](../../src/core/project_links_tests.rs#L1062)。
+- [Broker 原生替换测试](../../src/core/symlink.rs#L1780)。
 
 ## 修改清单
 
@@ -31,4 +34,4 @@
 
 ## 执行记录
 
-未执行。完成时填写修改文件、故障注入和平台结果，再勾选 TODO 04。
+2026-10-31：已将原分支实现与专项回归适配到当前 Store、i64 时间戳及独立测试文件；本轮集成实跑与完成状态统一记录于[阶段一二收口](阶段一二收口.md)，历史独立分支验收不替代 main 集成验收。

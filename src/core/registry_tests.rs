@@ -486,3 +486,119 @@ fn group_lifecycle_tracks_items_without_touching_sources() {
         .show_group("workday")
         .is_err());
 }
+
+#[test]
+fn registry_identifiers_ignore_aliases_for_both_item_types() {
+    for item_type in [LinkableItemType::Skill, LinkableItemType::Resource] {
+        let temp = TestDir::new("identity-alias");
+        let resolution = resolution(temp.path());
+        Store::migrate(&resolution).unwrap();
+        let store = Store::open_rw(&resolution).unwrap();
+        let register = |name: &str, alias: &str| {
+            let source = temp.path().join(name);
+            if item_type == LinkableItemType::Skill {
+                fs::create_dir(&source).unwrap();
+                fs::write(source.join("SKILL.md"), name).unwrap();
+            } else {
+                fs::write(&source, name).unwrap();
+            }
+            store
+                .add_item(AddLinkableItem {
+                    item_type,
+                    name: name.into(),
+                    alias: Some(alias.into()),
+                    source_path: source,
+                    default_target_dir: (item_type == LinkableItemType::Resource)
+                        .then(|| PathBuf::from("docs")),
+                    description: None,
+                })
+                .unwrap()
+        };
+        let alpha = register("alpha", "beta");
+        store.create_group("daily", None).unwrap();
+
+        // Alias alone must fail before any mutation can select alpha.
+        assert!(store.find_item(item_type, "beta").is_err());
+        assert!(store.find_any_item("beta").is_err());
+        assert!(store.rename_item(item_type, "beta", "delta").is_err());
+        assert!(store.refresh_item(item_type, "beta").is_err());
+        assert!(store.remove_item(item_type, "beta").is_err());
+        assert!(store.add_group_items("daily", &["beta".into()]).is_err());
+        assert!(store.remove_group_items("daily", &["beta".into()]).is_err());
+        assert_eq!(store.find_item(item_type, &alpha.id).unwrap().id, alpha.id);
+        assert_eq!(store.find_any_item(&alpha.id).unwrap().id, alpha.id);
+        let beta = register("beta", "gamma");
+        assert_eq!(store.find_item(item_type, "beta").unwrap().id, beta.id);
+        assert_eq!(store.find_any_item("beta").unwrap().id, beta.id);
+        assert_eq!(store.refresh_item(item_type, "beta").unwrap().id, beta.id);
+        assert!(store.find_item(item_type, "gamma").is_err());
+        assert!(store.find_any_item("gamma").is_err());
+        assert_eq!(alpha.link_name(), "beta");
+        assert_eq!(beta.link_name(), "gamma");
+        let group = store
+            .add_group_items("daily", &[alpha.id.clone(), "beta".into()])
+            .unwrap()
+            .group;
+        assert_eq!(group.items.len(), 2);
+        let group = store.remove_group_items("daily", &["beta".into()]).unwrap();
+        assert_eq!(group.items.len(), 1);
+        assert_eq!(group.items[0].id, alpha.id);
+        let renamed = store.rename_item(item_type, "beta", "delta").unwrap();
+        assert_eq!(renamed.id, beta.id);
+        assert_eq!(renamed.name, "delta");
+        assert_eq!(renamed.alias, beta.alias);
+        assert_eq!(renamed.link_name(), "gamma");
+        assert_eq!(
+            store.rename_item(item_type, "delta", "beta").unwrap().id,
+            beta.id
+        );
+        assert_eq!(store.remove_item(item_type, "beta").unwrap().id, beta.id);
+        assert_eq!(store.find_any_item("alpha").unwrap(), alpha);
+        assert!(store.find_any_item("beta").is_err());
+    }
+}
+
+#[test]
+fn alias_of_another_type_does_not_make_name_lookup_ambiguous() {
+    let temp = TestDir::new("identity-cross-type");
+    let resolution = resolution(temp.path());
+    Store::migrate(&resolution).unwrap();
+    let store = Store::open_rw(&resolution).unwrap();
+    let skill = temp.path().join("skill");
+    fs::create_dir(&skill).unwrap();
+    fs::write(skill.join("SKILL.md"), "alpha").unwrap();
+    store
+        .add_item(AddLinkableItem {
+            item_type: LinkableItemType::Skill,
+            name: "alpha".into(),
+            alias: Some("beta".into()),
+            source_path: skill,
+            default_target_dir: None,
+            description: None,
+        })
+        .unwrap();
+    let source = temp.path().join("resource.txt");
+    fs::write(&source, "beta").unwrap();
+    let beta = store
+        .add_item(AddLinkableItem {
+            item_type: LinkableItemType::Resource,
+            name: "beta".into(),
+            alias: None,
+            source_path: source,
+            default_target_dir: Some(PathBuf::from("docs")),
+            description: None,
+        })
+        .unwrap();
+
+    assert_eq!(store.find_any_item("beta").unwrap().id, beta.id);
+    store.create_group("daily", None).unwrap();
+    assert_eq!(
+        store
+            .add_group_items("daily", &["beta".into()])
+            .unwrap()
+            .group
+            .items[0]
+            .id,
+        beta.id
+    );
+}

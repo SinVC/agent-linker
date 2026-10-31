@@ -276,6 +276,10 @@ pub trait SymlinkProvider {
 
     fn create_symlink(&mut self, source: &Path, link: &Path, kind: LinkKind) -> SymlinkResult<()>;
 
+    /// Replace an existing symlink without removing it before its replacement is ready.
+    /// Reject real paths and validate the new source before changing the old link.
+    fn replace_symlink(&mut self, source: &Path, link: &Path, kind: LinkKind) -> SymlinkResult<()>;
+
     fn remove_symlink(&mut self, link: &Path) -> SymlinkResult<RemoveSymlinkOutcome>;
 
     fn read_link(&self, link: &Path) -> SymlinkResult<PathBuf>;
@@ -307,8 +311,11 @@ pub fn ensure_symlink(
                 .with_detail(format!("existing link points to {}", actual.display())));
             }
 
-            provider.remove_symlink(link)?;
-            provider.create_symlink(source, link, kind)?;
+            provider.replace_symlink(source, link, kind)?;
+            Ok(CreateSymlinkOutcome::ReplacedWrongSymlink)
+        }
+        LinkStatus::BrokenSymlink { .. } if options.force => {
+            provider.replace_symlink(source, link, kind)?;
             Ok(CreateSymlinkOutcome::ReplacedWrongSymlink)
         }
         LinkStatus::BrokenSymlink { target } => Err(SymlinkError::new(
@@ -388,6 +395,13 @@ impl SymlinkProvider for StdSymlinkProvider {
         create_std_symlink(source, link, kind, self.backend)
     }
 
+    fn replace_symlink(&mut self, source: &Path, link: &Path, kind: LinkKind) -> SymlinkResult<()> {
+        validate_source(source, kind, self.backend)?;
+        validate_link_parent(link, self.backend)?;
+        require_fs_symlink(link, self.backend)?;
+        replace_std_symlink(source, link, kind, self.backend)
+    }
+
     fn remove_symlink(&mut self, link: &Path) -> SymlinkResult<RemoveSymlinkOutcome> {
         remove_fs_symlink(link, self.backend)
     }
@@ -416,34 +430,11 @@ impl SymlinkProvider for WindowsBrokerSymlinkProvider {
     }
 
     fn create_symlink(&mut self, source: &Path, link: &Path, kind: LinkKind) -> SymlinkResult<()> {
-        #[cfg(windows)]
-        {
-            validate_source(source, kind, SymlinkBackend::WindowsBroker)?;
-            validate_link_parent(link, SymlinkBackend::WindowsBroker)?;
-            reject_existing_link_path(link, SymlinkBackend::WindowsBroker)?;
+        self.write_symlink(source, link, kind, false)
+    }
 
-            let options = BrokerCreateSymlinkOptions::new(source, link)
-                .target_kind(broker_target_kind(kind))
-                .replace_existing_symlink(false);
-
-            create_symlink_via_broker(options).map_err(|error| {
-                broker_error_to_symlink_error(error)
-                    .with_source(source)
-                    .with_link(link)
-            })
-        }
-
-        #[cfg(not(windows))]
-        {
-            let _ = kind;
-            Err(SymlinkError::new(
-                SymlinkErrorKind::UnsupportedPlatform,
-                SymlinkBackend::WindowsBroker,
-            )
-            .with_source(source)
-            .with_link(link)
-            .with_detail("Windows Broker provider is only available on Windows"))
-        }
+    fn replace_symlink(&mut self, source: &Path, link: &Path, kind: LinkKind) -> SymlinkResult<()> {
+        self.write_symlink(source, link, kind, true)
     }
 
     fn remove_symlink(&mut self, link: &Path) -> SymlinkResult<RemoveSymlinkOutcome> {
@@ -499,6 +490,49 @@ impl SymlinkProvider for WindowsBrokerSymlinkProvider {
     }
 }
 
+impl WindowsBrokerSymlinkProvider {
+    fn write_symlink(
+        &mut self,
+        source: &Path,
+        link: &Path,
+        kind: LinkKind,
+        replace: bool,
+    ) -> SymlinkResult<()> {
+        #[cfg(windows)]
+        {
+            validate_source(source, kind, SymlinkBackend::WindowsBroker)?;
+            validate_link_parent(link, SymlinkBackend::WindowsBroker)?;
+            if replace {
+                require_fs_symlink(link, SymlinkBackend::WindowsBroker)?;
+            } else {
+                reject_existing_link_path(link, SymlinkBackend::WindowsBroker)?;
+            }
+
+            let options = BrokerCreateSymlinkOptions::new(source, link)
+                .target_kind(broker_target_kind(kind))
+                .replace_existing_symlink(replace);
+
+            create_symlink_via_broker(options).map_err(|error| {
+                broker_error_to_symlink_error(error)
+                    .with_source(source)
+                    .with_link(link)
+            })
+        }
+
+        #[cfg(not(windows))]
+        {
+            let _ = (kind, replace);
+            Err(SymlinkError::new(
+                SymlinkErrorKind::UnsupportedPlatform,
+                SymlinkBackend::WindowsBroker,
+            )
+            .with_source(source)
+            .with_link(link)
+            .with_detail("Windows Broker provider is only available on Windows"))
+        }
+    }
+}
+
 #[cfg(windows)]
 fn broker_target_kind(kind: LinkKind) -> TargetKind {
     match kind {
@@ -547,6 +581,7 @@ pub enum MockEntry {
 #[derive(Debug, Clone, Default)]
 pub struct MockSymlinkProvider {
     entries: BTreeMap<PathBuf, MockEntry>,
+    fail_next_replacement: bool,
 }
 
 impl MockSymlinkProvider {
@@ -585,6 +620,27 @@ impl MockSymlinkProvider {
         self.entries.get(path)
     }
 
+    pub fn fail_next_replacement(&mut self) {
+        self.fail_next_replacement = true;
+    }
+
+    fn validate_source(&self, source: &Path, kind: LinkKind) -> SymlinkResult<()> {
+        if !self.entries.contains_key(source) {
+            return Err(
+                SymlinkError::new(SymlinkErrorKind::SourceNotFound, self.backend())
+                    .with_source(source),
+            );
+        }
+        if !self.source_matches_kind(source, kind) {
+            return Err(
+                SymlinkError::new(SymlinkErrorKind::UnsupportedLinkKind, self.backend())
+                    .with_source(source)
+                    .with_detail(format!("source is not a {kind}")),
+            );
+        }
+        Ok(())
+    }
+
     fn source_matches_kind(&self, source: &Path, kind: LinkKind) -> bool {
         matches!(
             (self.entries.get(source), kind),
@@ -611,23 +667,8 @@ impl SymlinkProvider for MockSymlinkProvider {
     }
 
     fn create_symlink(&mut self, source: &Path, link: &Path, kind: LinkKind) -> SymlinkResult<()> {
-        if !self.entries.contains_key(source) {
-            return Err(
-                SymlinkError::new(SymlinkErrorKind::SourceNotFound, SymlinkBackend::Mock)
-                    .with_source(source)
-                    .with_link(link),
-            );
-        }
-
-        if !self.source_matches_kind(source, kind) {
-            return Err(SymlinkError::new(
-                SymlinkErrorKind::UnsupportedLinkKind,
-                SymlinkBackend::Mock,
-            )
-            .with_source(source)
-            .with_link(link)
-            .with_detail(format!("source is not a {kind}")));
-        }
+        self.validate_source(source, kind)
+            .map_err(|error| error.with_link(link))?;
 
         if !self.parent_exists(link) {
             return Err(SymlinkError::new(
@@ -647,6 +688,21 @@ impl SymlinkProvider for MockSymlinkProvider {
             .with_link(link));
         }
 
+        self.add_symlink(link.to_path_buf(), source.to_path_buf(), kind);
+        Ok(())
+    }
+
+    fn replace_symlink(&mut self, source: &Path, link: &Path, kind: LinkKind) -> SymlinkResult<()> {
+        self.validate_source(source, kind)
+            .map_err(|error| error.with_link(link))?;
+        // read_link rejects real files/directories and absent paths without changing them.
+        self.read_link(link)?;
+        if std::mem::take(&mut self.fail_next_replacement) {
+            return Err(SymlinkError::new(SymlinkErrorKind::Io, self.backend())
+                .with_source(source)
+                .with_link(link)
+                .with_detail("injected replacement failure"));
+        }
         self.add_symlink(link.to_path_buf(), source.to_path_buf(), kind);
         Ok(())
     }
@@ -796,6 +852,59 @@ fn reject_existing_link_path(link: &Path, backend: SymlinkBackend) -> SymlinkRes
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(io_to_symlink_error(error, backend).with_link(link)),
+    }
+}
+
+fn require_fs_symlink(link: &Path, backend: SymlinkBackend) -> SymlinkResult<()> {
+    let metadata = fs::symlink_metadata(link)
+        .map_err(|error| io_to_symlink_error(error, backend).with_link(link))?;
+    if metadata.file_type().is_symlink() {
+        return Ok(());
+    }
+    let kind = if metadata.is_file() {
+        SymlinkErrorKind::ExistingRealFile
+    } else if metadata.is_dir() {
+        SymlinkErrorKind::ExistingRealDirectory
+    } else {
+        SymlinkErrorKind::UnsupportedLinkKind
+    };
+    Err(SymlinkError::new(kind, backend).with_link(link))
+}
+
+fn replace_std_symlink(
+    source: &Path,
+    link: &Path,
+    kind: LinkKind,
+    backend: SymlinkBackend,
+) -> SymlinkResult<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
+    let parent = link.parent().unwrap_or_else(|| Path::new("."));
+    loop {
+        let temporary = parent.join(format!(
+            ".aglink-symlink-{}-{}.tmp",
+            std::process::id(),
+            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+        ));
+        // Creating the temporary symlink itself reserves its name without clobbering.
+        match create_std_symlink(source, &temporary, kind, backend) {
+            Err(_) if fs::symlink_metadata(&temporary).is_ok() => continue,
+            Err(error) => return Err(error.with_link(link)),
+            Ok(()) => {}
+        }
+        let result = require_fs_symlink(link, backend).and_then(|()| {
+            fs::rename(&temporary, link).map_err(|error| {
+                io_to_symlink_error(error, backend)
+                    .with_source(source)
+                    .with_link(link)
+            })
+        });
+        if result.is_err() {
+            // Only the staged symlink belongs to us; never remove the destination here.
+            let _ = remove_fs_symlink(&temporary, backend);
+        }
+        return result;
     }
 }
 
@@ -1281,6 +1390,106 @@ mod tests {
     }
 
     #[test]
+    fn force_replaces_live_and_dangling_wrong_targets_and_failure_keeps_old_link() {
+        for old_exists in [true, false] {
+            for fail in [true, false] {
+                let mut provider = base_mock();
+                let source = path("project/new.md");
+                let old = path("project/old.md");
+                let link = path("project/link.md");
+                provider.add_file(&source);
+                if old_exists {
+                    provider.add_file(&old);
+                }
+                provider.add_symlink(&link, &old, LinkKind::File);
+                assert_eq!(
+                    ensure_symlink(
+                        &mut provider,
+                        &source,
+                        &link,
+                        LinkKind::File,
+                        CreateSymlinkOptions::new()
+                    )
+                    .unwrap_err()
+                    .kind(),
+                    SymlinkErrorKind::WrongSymlinkTarget
+                );
+                assert_eq!(provider.read_link(&link).unwrap(), old);
+                if fail {
+                    provider.fail_next_replacement();
+                }
+                let result = ensure_symlink(
+                    &mut provider,
+                    &source,
+                    &link,
+                    LinkKind::File,
+                    CreateSymlinkOptions::force_wrong_symlink(),
+                );
+                if fail {
+                    assert_eq!(result.unwrap_err().kind(), SymlinkErrorKind::Io);
+                    assert_eq!(provider.read_link(&link).unwrap(), old);
+                } else {
+                    assert_eq!(result.unwrap(), CreateSymlinkOutcome::ReplacedWrongSymlink);
+                    assert_eq!(provider.read_link(&link).unwrap(), source);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn replacement_validates_new_source_and_preserves_old_link() {
+        let mut provider = base_mock();
+        let source = path("project/new.md");
+        let old = path("project/old.md");
+        let link = path("project/link.md");
+        provider.add_file(&old);
+        provider.add_symlink(&link, &old, LinkKind::File);
+        assert_eq!(
+            ensure_symlink(
+                &mut provider,
+                &source,
+                &link,
+                LinkKind::File,
+                CreateSymlinkOptions::force_wrong_symlink(),
+            )
+            .unwrap_err()
+            .kind(),
+            SymlinkErrorKind::SourceNotFound
+        );
+        assert_eq!(provider.read_link(&link).unwrap(), old);
+        provider.add_dir(&source);
+        assert_eq!(
+            provider
+                .replace_symlink(&source, &link, LinkKind::File)
+                .unwrap_err()
+                .kind(),
+            SymlinkErrorKind::UnsupportedLinkKind
+        );
+        assert_eq!(provider.read_link(&link).unwrap(), old);
+        provider.add_file(&source);
+        for directory in [false, true] {
+            if directory {
+                provider.add_dir(&link);
+            } else {
+                provider.add_file(&link);
+            }
+            let before = provider.entry(&link).cloned();
+            assert_eq!(
+                provider
+                    .replace_symlink(&source, &link, LinkKind::File)
+                    .unwrap_err()
+                    .kind(),
+                if directory {
+                    SymlinkErrorKind::ExistingRealDirectory
+                } else {
+                    SymlinkErrorKind::ExistingRealFile
+                }
+            );
+            assert_eq!(provider.entry(&link), before.as_ref());
+        }
+    }
+
+    #[test]
     fn force_never_deletes_real_file_or_directory() {
         let mut file_provider = base_mock();
         file_provider.add_file(path("project/source.md"));
@@ -1431,6 +1640,14 @@ mod tests {
                 SymlinkErrorKind::WrongSymlinkTarget,
             ),
             (
+                ErrorCode::UnsafeReparsePoint,
+                SymlinkErrorKind::WrongSymlinkTarget,
+            ),
+            (
+                ErrorCode::ReplacementPartiallyCompleted,
+                SymlinkErrorKind::WrongSymlinkTarget,
+            ),
+            (
                 ErrorCode::TargetKindConflict,
                 SymlinkErrorKind::UnsupportedLinkKind,
             ),
@@ -1483,6 +1700,188 @@ mod tests {
                 .unwrap(),
             LinkStatus::Missing
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn std_replacement_renames_same_directory_symlink_and_preserves_real_paths() {
+        for kind in [LinkKind::File, LinkKind::Directory] {
+            let temp = TestDir::new();
+            let source = temp.path().join("source");
+            let old = temp.path().join("old");
+            let link = temp.path().join("link");
+            match kind {
+                LinkKind::File => fs::write(&source, "new source").unwrap(),
+                LinkKind::Directory => fs::create_dir(&source).unwrap(),
+            }
+            let mut provider = StdSymlinkProvider::new();
+            // A dangling old target can be replaced without deleting the link first.
+            std::os::unix::fs::symlink(&old, &link).unwrap();
+            assert_eq!(
+                ensure_symlink(
+                    &mut provider,
+                    &source,
+                    &link,
+                    kind,
+                    CreateSymlinkOptions::new()
+                )
+                .unwrap_err()
+                .kind(),
+                SymlinkErrorKind::WrongSymlinkTarget
+            );
+            assert_eq!(
+                ensure_symlink(
+                    &mut provider,
+                    &source,
+                    &link,
+                    kind,
+                    CreateSymlinkOptions::force_wrong_symlink()
+                )
+                .unwrap(),
+                CreateSymlinkOutcome::ReplacedWrongSymlink
+            );
+            assert_eq!(fs::read_link(&link).unwrap(), source);
+            assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 2);
+            assert_eq!(
+                provider
+                    .replace_symlink(&old, &link, kind)
+                    .unwrap_err()
+                    .kind(),
+                SymlinkErrorKind::SourceNotFound
+            );
+            assert_eq!(fs::read_link(&link).unwrap(), source);
+            provider.remove_symlink(&link).unwrap();
+            fs::write(&link, "user data").unwrap();
+            assert_eq!(
+                provider
+                    .replace_symlink(&source, &link, kind)
+                    .unwrap_err()
+                    .kind(),
+                SymlinkErrorKind::ExistingRealFile
+            );
+            assert_eq!(fs::read_to_string(&link).unwrap(), "user data");
+            fs::remove_file(&link).unwrap();
+            fs::create_dir(&link).unwrap();
+            fs::write(link.join("keep"), "user data").unwrap();
+            assert_eq!(
+                provider
+                    .replace_symlink(&source, &link, kind)
+                    .unwrap_err()
+                    .kind(),
+                SymlinkErrorKind::ExistingRealDirectory
+            );
+            assert_eq!(fs::read_to_string(link.join("keep")).unwrap(), "user data");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires running WinSymlinksBroker; run serially with --ignored --test-threads=1"]
+    fn broker_native_replacement_and_error_codes() {
+        use super::{
+            broker_target_kind, create_symlink_via_broker, BrokerCreateSymlinkOptions,
+            WindowsBrokerSymlinkProvider,
+        };
+        use crate::core::test_support::TestDir;
+        use std::fs;
+
+        for kind in [LinkKind::File, LinkKind::Directory] {
+            for dangling in [false, true] {
+                let temp = TestDir::new("broker-replace");
+                let old = temp.path().join("old");
+                let source = temp.path().join("source");
+                let link = temp.path().join("link");
+                match kind {
+                    LinkKind::File => {
+                        fs::write(&old, "old").unwrap();
+                        fs::write(&source, "new").unwrap();
+                    }
+                    LinkKind::Directory => {
+                        fs::create_dir(&old).unwrap();
+                        fs::create_dir(&source).unwrap();
+                    }
+                }
+                let mut provider = WindowsBrokerSymlinkProvider::new();
+                provider.create_symlink(&old, &link, kind).unwrap();
+                let error = create_symlink_via_broker(
+                    BrokerCreateSymlinkOptions::new(&source, &link)
+                        .target_kind(broker_target_kind(kind))
+                        .replace_existing_symlink(false),
+                )
+                .unwrap_err();
+                assert_eq!(error.code(), ErrorCode::LinkAlreadyExists);
+                assert_eq!(
+                    broker_error_to_symlink_error(error).broker_code(),
+                    Some("LINK_ALREADY_EXISTS")
+                );
+                if dangling {
+                    match kind {
+                        LinkKind::File => fs::remove_file(&old).unwrap(),
+                        LinkKind::Directory => fs::remove_dir(&old).unwrap(),
+                    }
+                }
+                assert_eq!(
+                    ensure_symlink(
+                        &mut provider,
+                        &source,
+                        &link,
+                        kind,
+                        CreateSymlinkOptions::new()
+                    )
+                    .unwrap_err()
+                    .kind(),
+                    SymlinkErrorKind::WrongSymlinkTarget
+                );
+                assert_eq!(
+                    ensure_symlink(
+                        &mut provider,
+                        &source,
+                        &link,
+                        kind,
+                        CreateSymlinkOptions::force_wrong_symlink()
+                    )
+                    .unwrap(),
+                    CreateSymlinkOutcome::ReplacedWrongSymlink
+                );
+                assert!(matches!(
+                    provider.link_status(&source, &link, kind).unwrap(),
+                    LinkStatus::CorrectSymlink { .. }
+                ));
+                let before = provider.read_link(&link).unwrap();
+                assert_eq!(
+                    provider
+                        .replace_symlink(&old.with_file_name("missing"), &link, kind)
+                        .unwrap_err()
+                        .kind(),
+                    SymlinkErrorKind::SourceNotFound
+                );
+                assert_eq!(provider.read_link(&link).unwrap(), before);
+                provider.remove_symlink(&link).unwrap();
+                for directory in [false, true] {
+                    if directory {
+                        fs::create_dir(&link).unwrap();
+                    } else {
+                        fs::write(&link, "user data").unwrap();
+                    }
+                    let error = create_symlink_via_broker(
+                        BrokerCreateSymlinkOptions::new(&source, &link)
+                            .target_kind(broker_target_kind(kind))
+                            .replace_existing_symlink(true),
+                    )
+                    .unwrap_err();
+                    assert_eq!(error.code(), ErrorCode::LinkPathIsNotSymlink);
+                    let mapped = broker_error_to_symlink_error(error);
+                    assert_eq!(mapped.kind(), SymlinkErrorKind::WrongSymlinkTarget);
+                    assert_eq!(mapped.broker_code(), Some("LINK_PATH_IS_NOT_SYMLINK"));
+                    if directory {
+                        fs::remove_dir(&link).unwrap();
+                    } else {
+                        assert_eq!(fs::read_to_string(&link).unwrap(), "user data");
+                        fs::remove_file(&link).unwrap();
+                    }
+                }
+            }
+        }
     }
 
     #[cfg(unix)]

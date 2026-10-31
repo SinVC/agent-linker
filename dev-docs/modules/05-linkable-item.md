@@ -61,6 +61,7 @@ Resource 约束：
 - 链接时实际 source kind 与 Registry 记录不一致时必须报错。
 - 来源始终外部管理，不持久化单值 source_type/source_ownership 或未消费的 repo/version/commit 预留字段。
 - 删除 Registry 项不自动删除已链接项目中的 symlink。
+- 注册项 Manifest 使用 `origin = "item"`，旧 `framework_name = "registry"` 兼容推断为 item。`unlink --all` 仅解绑 item；分组解绑按当前成员 item_id 选择其全部 item 链接，保留 Harness 与分组外记录。
 
 ## 验收口径
 

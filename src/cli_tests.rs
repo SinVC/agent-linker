@@ -162,8 +162,8 @@ fn status_json_uses_structured_escaping() {
             entries: vec![StatusEntry {
                 record: LinkRecord {
                     id: "id\"1".to_string(),
-                    scope: "project".to_string(),
-                    harness_name: "registry".to_string(),
+                    origin: crate::core::manifest::LinkOrigin::Item,
+                    harness_name: None,
                     item_id: "item\\1".to_string(),
                     item_name: "writer\nskill".to_string(),
                     source_path: PathBuf::from("source\"path"),

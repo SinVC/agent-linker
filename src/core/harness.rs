@@ -1,7 +1,9 @@
 //! Harness definitions, mappings, and Store business operations.
 use crate::core::{
     error::{Error, Result},
-    paths::{resolve_managed_project_path, validate_managed_relative_path},
+    paths::{
+        managed_relative_path_key, resolve_managed_project_path, validate_managed_relative_path,
+    },
     store::Store,
     symlink::LinkKind,
     util::{timestamp, timestamp_nanos},
@@ -180,23 +182,50 @@ impl Store {
     }
     pub fn add_mapping(&self, request: AddHarnessMapping) -> Result<StoredHarnessMapping> {
         self.write(|connection| {
-   validate_mapping_path(&request.source_path,"source path")?;
-   validate_mapping_path(&request.link_path,"link path")?;
-   let harness_id=find_harness_id(connection,&request.harness)?;
-   let source_text=path_to_db_text(&request.source_path,"source path")?;
-   let link_text=path_to_db_text(&request.link_path,"link path")?;
-   let id=format!("mapping:{}:{}",harness_id,timestamp_nanos());
-   let now=timestamp();
-   connection.execute("INSERT INTO harness_mappings(id,harness_id,source_path,link_path,link_kind,required,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,0,?6,?6)",params![id,harness_id,source_text,link_text,request.link_kind.to_string(),now])?;
-   find_mapping_by_id(connection,&id)
-  })
+            validate_mapping_path(&request.source_path, "source path")?;
+            validate_mapping_path(&request.link_path, "link path")?;
+            let harness_id = find_harness_id(connection, &request.harness)?;
+            let source_text = path_to_db_text(&request.source_path, "source path")?;
+            let link_text = request.link_path.components().filter_map(|part| match part {
+                std::path::Component::Normal(value) => Some(path_to_db_text(Path::new(value), "link path")),
+                _ => None,
+            }).collect::<Result<Vec<_>>>()?.join("/");
+            let key = managed_relative_path_key(&request.link_path);
+            // Older records retain their spelling; compare their managed path keys.
+            if list_harness_mappings(connection, Some(&harness_id))?.iter()
+                .any(|mapping| managed_relative_path_key(&mapping.link_path) == key)
+            {
+                return Err(Error::invalid_arguments(format!("harness mapping destination already exists: {link_text}")));
+            }
+            let id = format!("mapping:{}:{}", harness_id, timestamp_nanos());
+            let now = timestamp();
+            connection.execute(
+                "INSERT INTO harness_mappings(id,harness_id,source_path,link_path,link_kind,required,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,0,?6,?6)",
+                params![id,harness_id,source_text,link_text,request.link_kind.to_string(),now],
+            )?;
+            find_mapping_by_id(connection, &id)
+        })
     }
     pub fn remove_mapping(&self, harness: &str, link_path: &Path) -> Result<StoredHarnessMapping> {
         self.write(|connection| {
             validate_mapping_path(link_path, "link path")?;
             let harness_id = find_harness_id(connection, harness)?;
-            let link_text = path_to_db_text(link_path, "link path")?;
-            let mapping = find_mapping_by_harness_and_link(connection, &harness_id, &link_text)?;
+            let mappings = list_harness_mappings(connection, Some(&harness_id))?;
+            let key = managed_relative_path_key(link_path);
+            let mapping = mappings
+                .iter()
+                .find(|mapping| mapping.link_path.as_os_str() == link_path.as_os_str())
+                .or_else(|| {
+                    mappings
+                        .iter()
+                        .find(|mapping| managed_relative_path_key(&mapping.link_path) == key)
+                })
+                .ok_or_else(|| {
+                    Error::database(format!(
+                        "harness `{harness_id}` has no mapping for `{}`",
+                        link_path.display()
+                    ))
+                })?;
             if mapping.required {
                 return Err(Error::invalid_arguments(format!(
                     "required harness mapping '{}' cannot be removed",
@@ -204,7 +233,7 @@ impl Store {
                 )));
             }
             connection.execute("DELETE FROM harness_mappings WHERE id=?1", [&mapping.id])?;
-            Ok(mapping)
+            Ok(mapping.clone())
         })
     }
 }
@@ -316,29 +345,6 @@ fn find_mapping_by_id(connection: &rusqlite::Connection, id: &str) -> Result<Sto
             stored_mapping_from_row,
         )
         .map_err(Error::from)
-}
-
-fn find_mapping_by_harness_and_link(
-    connection: &rusqlite::Connection,
-    harness_id: &str,
-    link_path: &str,
-) -> Result<StoredHarnessMapping> {
-    connection
-        .query_row(
-            r#"
-            SELECT id, harness_id, source_path, link_path, link_kind, required, created_at, updated_at
-            FROM harness_mappings
-            WHERE harness_id = ?1 AND link_path = ?2
-            "#,
-            params![harness_id, link_path],
-            stored_mapping_from_row,
-        )
-        .optional()?
-        .ok_or_else(|| {
-            Error::database(format!(
-                "harness `{harness_id}` has no mapping for `{link_path}`"
-            ))
-        })
 }
 
 fn validate_mapping_path(path: &Path, label: &str) -> Result<()> {

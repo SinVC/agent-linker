@@ -593,7 +593,6 @@ fn report_lines(report: &CommandReport, verbose: bool) -> Vec<String> {
             let mut lines = vec![
                 format!("Database: {}", report.path.display()),
                 format!("Exists: {}", yes_no(report.exists)),
-                format!("Writable: {}", yes_no(report.is_ok())),
                 format!(
                     "Schema: {} / latest {}",
                     report

@@ -8,9 +8,10 @@
 
 ## 代码入口
 
-- [save_manifest](../../src/core/manifest.rs#L216)、[load_manifest](../../src/core/manifest.rs#L196)。
-- [init 保存点](../../src/core/manifest.rs#L186)、[link 保存点](../../src/core/project_links.rs#L270)、[unlink_selected_indexes](../../src/core/project_links.rs#L804)、[clean](../../src/core/project_links.rs#L503)。
-- [现有清单测试](../../src/core/manifest.rs#L674)、[损坏清单不覆盖测试](../../src/core/manifest.rs#L721)。
+- [save_manifest / save_manifest_with_io](../../src/core/manifest.rs#L278)。
+- [load_manifest](../../src/core/manifest.rs#L256)。
+- [原子保存与故障注入测试](../../src/core/manifest_tests.rs#L414)。
+- [Windows 真实文件锁测试](../../src/core/manifest_tests.rs#L538)。
 
 ## 修改清单
 
@@ -28,4 +29,4 @@
 
 ## 执行记录
 
-未执行。完成时填写修改文件、失败场景与平台结果，再勾选 TODO 03。
+2026-10-31：已将原分支实现与专项回归适配到当前 Store、i64 时间戳及独立测试文件；本轮集成实跑与完成状态统一记录于[阶段一二收口](阶段一二收口.md)，历史独立分支验收不替代 main 集成验收。

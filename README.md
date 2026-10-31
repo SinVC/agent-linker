@@ -8,8 +8,8 @@
 
 - **Safety First (安全第一)**: 严格区分真实文件与符号链接。程序永远不会覆盖或删除用户的真实文件与目录。即便在使用 `--force` 时，也仅限于替换错误的符号链接。
 - **Cross-platform Consistency (跨平台一致性)**: 在 Linux / macOS 上使用原生 Symlink；在 Windows 上提供专属 Broker 服务机制，彻底告别频繁的 UAC 提权弹窗。
-- **Centralized Management (中心化管理)**: 全局使用 SQLite 存储 Registry、Config、Harness 和 Group 数据，支持按分组管理技能与资源，一处修改，处处生效。
-- **Harness Adapter (兼容适配)**: 管理 Claude Code 等 Harness 的路径约定；当前 `init` 创建内置 Claude Code 兼容链接，自定义 mapping 与启停标记仅保存在全局数据库。
+- **Centralized Management (中心化管理)**: 全局使用 SQLite 存储 Registry、Harness 和 Group 数据，支持按分组管理技能与资源，一处修改，处处生效。
+- **Harness Adapter (兼容适配)**: 管理 Claude Code 等 Harness 的路径约定；`init` 只读消费全局已启用 Harness 的映射；缺库时使用内置 Claude 默认映射，不创建全局库。
 - **High Performance (高性能)**: 基于 Rust 构建，操作幂等，执行极速。
 
 ## 🎯 Significance (意义)

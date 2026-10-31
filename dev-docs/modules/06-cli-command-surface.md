@@ -143,10 +143,12 @@ aglink doctor
 - `link` 根据 Registry 中的 Linkable Item 类型决定链接目标。
 - `--as` 只覆盖本次链接名，不修改 Registry alias。
 - `--target-dir` 只用于 Resource 的本次链接目标覆盖。
-- `--force` 只允许替换错误 symlink，不允许删除真实文件或真实目录。
+- `--force` 以有效且类型匹配的新 source 替换错误目标或旧目标已缺失的 symlink；由 Provider 替换，不先删后建，不允许删除真实文件或目录。
 - `--dry-run` 覆盖 `link`、`unlink`、`clean`、`group link` 和 `group unlink`；`init` 在 MVP 中暂不支持 dry run。
 - `status --json` 的 `links[].status` 使用稳定 snake_case 机器值：`missing`、`correct_symlink`、`wrong_symlink_target`、`broken_symlink`、`existing_real_file`、`existing_real_directory`、`unsupported_file_type`。
 - `unlink` 和 `clean` 只处理 manifest 中由 `aglink` 管理的 symlink。
+- Manifest 来源为 harness 或 item，旧 registry 哨兵兼容推断为 item；旧 scope 不再写出。`unlink --all` 只解绑 item，group unlink 按当前成员 item_id 选择其全部 item 链接，保留 Harness。
+- alias 不参与注册项标识符查询；rename 保留 item_id、已有项目 Manifest、路径和 source。`init` 的 gitignore 托管项为 `.claude/`、`.agents/`，保留块外内容。
 - 项目操作统一使用受控路径入口；`.agents` 或链接、相对 source 的已有父目录为 symlink 时失败，不访问其外部目标。
 - `doctor` 检查数据库、migration、manifest、Harness Adapter、Windows Broker 和 symlink 后端可用性。
 - 临时验证场景由 `aglink link <name>` 和后续可能的 `aglink link --local <path>` 承担，`--local` 暂不进入正式命令集。

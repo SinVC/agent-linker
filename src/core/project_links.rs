@@ -15,7 +15,7 @@ use crate::core::{
         validate_optional_alias, validate_project_relative_target_dir, validate_resource_source,
         validate_skill_source, LinkableItem, LinkableItemType,
     },
-    manifest::{load_manifest, manifest_path, save_manifest, LinkRecord},
+    manifest::{load_manifest, manifest_path, save_manifest, LinkOrigin, LinkRecord},
     paths::{
         self, current_project_root, managed_relative_path_key, normalize_windows_path,
         resolve_managed_project_path, DbPathResolution,
@@ -471,7 +471,10 @@ pub fn unlink_group_project_with_provider_and_db_with_options(
         .links
         .iter()
         .enumerate()
-        .filter_map(|(index, record)| item_ids.contains(&record.item_id.as_str()).then_some(index))
+        .filter_map(|(index, record)| {
+            (record.origin == LinkOrigin::Item && item_ids.contains(&record.item_id.as_str()))
+                .then_some(index)
+        })
         .collect();
 
     unlink_selected_indexes(project_root, provider, manifest, &selected_indexes, options)
@@ -1015,6 +1018,10 @@ fn plan_symlink(
                 )
             }
         }
+        LinkStatus::BrokenSymlink { .. } if options.force => {
+            // Registered sources were validated before planning, just as for execution.
+            Ok(CreateSymlinkOutcome::ReplacedWrongSymlink)
+        }
         LinkStatus::BrokenSymlink { target } => Err(SymlinkError::new(
             SymlinkErrorKind::SourceNotFound,
             provider.backend(),
@@ -1116,8 +1123,8 @@ fn link_record_from_item(
     let now = timestamp();
     LinkRecord {
         id: record_id.to_string(),
-        scope: "project".to_string(),
-        harness_name: "registry".to_string(),
+        origin: LinkOrigin::Item,
+        harness_name: None,
         item_id: item.id.clone(),
         item_name: item.name.clone(),
         source_path: item.source_path.clone(),
@@ -1143,7 +1150,11 @@ fn select_unlink_indexes(
     identifier: Option<&str>,
 ) -> Result<BTreeSet<usize>> {
     let Some(identifier) = identifier else {
-        return Ok((0..records.len()).collect());
+        return Ok(records
+            .iter()
+            .enumerate()
+            .filter_map(|(index, record)| (record.origin == LinkOrigin::Item).then_some(index))
+            .collect());
     };
 
     let matches: Vec<usize> = records

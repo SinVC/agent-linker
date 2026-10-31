@@ -41,8 +41,8 @@ manifest 固定路径：
 manifest 至少记录：
 
 - `id`
-- `scope`
-- `harness name`（schema 1 的磁盘字段保留为 `framework_name`）
+- `origin`（`harness` 或 `item`）
+- `harness name`（仅 Harness 来源有值；磁盘字段为 `framework_name`）
 - `item id`
 - `item name`
 - `source path`
@@ -56,18 +56,20 @@ manifest 至少记录：
 ## 关键决策
 
 - manifest 是项目链接状态清单，不是项目级配置文件。
-- Harness 术语改名不改变 manifest schema 或已有 ID，旧清单无需迁移；Rust 字段名为 `harness_name`，读写仍使用 `framework_name`。
+- Harness 基础设施使用 `origin = "harness"`，注册项使用 `origin = "item"`；item 不持有或写出 Harness 名称。旧 `framework_name = "registry"` 推断为 item，其余旧 Harness 条目推断为 harness；旧 `scope` 可读取但不再写出，ID、路径和时间保留。
 - `init` 对已初始化全局库只读加载已启用 Harness 映射；缺库时使用同一 builtin_harnesses 定义的 Claude 默认映射，不创建目录/库、不迁移或 Seed；旧 schema 等其他错误正常返回。无启用 Harness 时不强制恢复 Claude。
 - mapping 复用受控项目路径、Symlink Core 和 Manifest 保存入口；不自动创建任意 mapping source。全局启停和 mapping 变更不反向更改已有项目。
 - Manifest 时间使用 i64 Unix 秒并写为整数，旧 unix:<seconds> 字段仍可读。
 - manifest 只记录 `aglink` 创建或接管管理的 symlink。
 - manifest 支持 `status`、`unlink`、`clean`、审计和恢复。
 - manifest 已存在且合法时合并或更新；损坏时失败且不覆盖。
+- 完整内容写入同目录 `.agents/.links.toml.tmp.<pid>` 后关闭并以 `fs::rename` 替换清单，不先删除原文件；独占创建临时文件，写入或替换失败保留原清单并清理本次临时文件。
 - Manifest 的 `link_path` 必须是非空项目相对路径，不含绝对根、盘符前缀或 `..` 组件；规范化相对路径后保持唯一，Windows 按大小写无关判重。
 - 创建、读取、状态检查、解绑、清理及 Manifest 读写统一通过 `core::paths` 解析受控路径；逐级检查已有父目录为真实目录，`.agents` 也必须为真实目录。链接末级允许为 symlink，Manifest 本体必须为真实文件。
 - Manifest 加载和保存同时验证记录中链接路径、项目相对 source 的祖先边界；绝对 source 可以位于项目外。路径解析本身不创建目录。
 - `.gitignore` 由 managed block 管理，不覆盖用户手写内容。
-- MVP 默认 ignore patterns 为 `.claude/`、`.agents/skills/`、`.agents/links.toml`。
+- 托管 ignore patterns 固定为 `.claude/`、`.agents/`；更新时保留块外原有内容。共享 `AGENTS.md` 不加入托管忽略。
+- `unlink --all` 只选择 item；分组解绑按当前成员 item_id 选择其全部 item 链接（包括不同 `--as`），保留 Harness 与分组外记录。
 
 ## 冲突规则
 

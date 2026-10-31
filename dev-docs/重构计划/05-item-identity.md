@@ -8,10 +8,11 @@
 
 ## 代码入口
 
-- [find_item_with_connection](../../src/core/registry.rs#L313)、[find_any_item_with_connection](../../src/core/registry.rs#L334)、[find_item_by_id](../../src/core/registry.rs#L367)。
-- [rename/remove/refresh](../../src/core/registry.rs#L123)、[group 成员解析](../../src/core/registry.rs#L466)。
-- [LinkableItem::link_name](../../src/core/linkable.rs#L79)、[link_name_for_request](../../src/core/registry.rs#L717)。
-- [项目 link 标识符消费](../../src/core/project_links.rs#L201)、[既有命名测试](../../src/core/registry.rs#L954)。
+- [注册项查询](../../src/core/registry.rs#L247)。
+- [rename / refresh](../../src/core/registry.rs#L66)。
+- [默认链接名](../../src/core/linkable.rs#L52)。
+- [Registry 专项回归](../../src/core/registry_tests.rs#L491)。
+- [项目标识与状态隔离回归](../../src/core/project_links_tests.rs#L797)。
 
 ## 修改清单
 
@@ -30,4 +31,4 @@
 
 ## 执行记录
 
-未执行。完成时填写修改文件与验证结果，再勾选 TODO 05。
+2026-10-31：已将原分支实现与专项回归适配到当前 Store、i64 时间戳及独立测试文件；本轮集成实跑与完成状态统一记录于[阶段一二收口](阶段一二收口.md)，历史独立分支验收不替代 main 集成验收。

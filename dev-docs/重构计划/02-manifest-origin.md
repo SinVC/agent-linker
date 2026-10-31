@@ -8,10 +8,13 @@
 
 ## 代码入口
 
-- [LinkRecord 与 Manifest::validate](../../src/core/manifest.rs#L27)、[record_from_mapping](../../src/core/manifest.rs#L409)、[serialize_manifest](../../src/core/manifest.rs#L428)、[link_from_table](../../src/core/manifest.rs#L556)。
-- [MANAGED_GITIGNORE_PATTERNS](../../src/core/manifest.rs#L24)、[update_gitignore](../../src/core/manifest.rs#L329)。
-- [link_record_from_item](../../src/core/project_links.rs#L1121)、[select_unlink_indexes](../../src/core/project_links.rs#L1152)、[group unlink](../../src/core/project_links.rs#L463)。
-- [status JSON 的记录消费](../../src/cli.rs#L1047)及同文件测试中的 `LinkRecord` 构造。
+- [LinkOrigin / LinkRecord](../../src/core/manifest.rs#L33)。
+- [Manifest::validate](../../src/core/manifest.rs#L78)。
+- [序列化与兼容读取](../../src/core/manifest.rs#L657)。
+- [gitignore 托管块](../../src/core/manifest.rs#L475)。
+- [item 记录与解绑选择](../../src/core/project_links.rs#L1117)。
+- [来源隔离测试](../../src/core/project_links_tests.rs#L1113)。
+- [旧清单往返测试](../../src/core/manifest_tests.rs#L572)。
 
 ## 修改清单
 
@@ -32,4 +35,4 @@
 
 ## 执行记录
 
-未执行。完成时填写修改文件与验证结果，再勾选 TODO 02。
+2026-10-31：已将原分支实现与专项回归适配到当前 Store、i64 时间戳及独立测试文件；本轮集成实跑与完成状态统一记录于[阶段一二收口](阶段一二收口.md)，历史独立分支验收不替代 main 集成验收。

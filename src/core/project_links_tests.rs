@@ -7,7 +7,7 @@ use super::{
 };
 use crate::core::{
     linkable::LinkableItemType,
-    manifest::load_manifest,
+    manifest::{load_manifest, save_manifest, LinkOrigin},
     paths::{DbPathReason, DbPathResolution},
     registry::AddLinkableItem,
     store::Store,
@@ -791,4 +791,460 @@ fn doctor_accepts_valid_database_with_no_harness_rows() {
         report.ok,
         "valid empty harness registry must remain healthy"
     );
+}
+
+#[test]
+fn link_identity_alias_and_rename_preserve_existing_project_state() {
+    for item_type in [LinkableItemType::Skill, LinkableItemType::Resource] {
+        let project = TestDir::new("link-identity");
+        let resolution = database(&project);
+        let store = Store::open_rw(&resolution).unwrap();
+        fs::create_dir(project.path().join(".agents")).unwrap();
+        let mut provider = MockSymlinkProvider::new();
+        provider.add_dir(project.path());
+        provider.add_dir(project.path().join(".agents"));
+        provider.add_dir(project.path().join(".agents/skills"));
+        provider.add_dir(project.path().join("docs"));
+        let mut items = Vec::new();
+        for (name, alias) in [("alpha", "beta"), ("beta", "gamma")] {
+            let source = project.path().join(format!("source-{name}"));
+            if item_type == LinkableItemType::Skill {
+                fs::create_dir(&source).unwrap();
+                fs::write(source.join("SKILL.md"), name).unwrap();
+                provider.add_dir(crate::core::test_support::canonical_path(&source));
+            } else {
+                fs::write(&source, name).unwrap();
+                provider.add_file(crate::core::test_support::canonical_path(&source));
+            }
+            items.push(
+                store
+                    .add_item(AddLinkableItem {
+                        item_type,
+                        name: name.into(),
+                        alias: Some(alias.into()),
+                        source_path: source,
+                        default_target_dir: (item_type == LinkableItemType::Resource)
+                            .then(|| PathBuf::from("docs")),
+                        description: None,
+                    })
+                    .unwrap(),
+            );
+        }
+        let request = |identifier: &str, override_name: Option<&str>| LinkItemRequest {
+            identifier: identifier.into(),
+            link_name_override: override_name.map(str::to_string),
+            target_dir_override: None,
+        };
+        assert!(link_project_with_provider_and_db(
+            project.path(),
+            &mut provider,
+            &resolution,
+            request("gamma", None),
+        )
+        .is_err());
+        let beta_link = link_project_with_provider_and_db(
+            project.path(),
+            &mut provider,
+            &resolution,
+            request("beta", None),
+        )
+        .unwrap();
+        assert_eq!(beta_link.item_name, "beta");
+        assert_eq!(beta_link.source_path, items[1].source_path);
+        assert_eq!(
+            beta_link.link_path,
+            items[1].default_project_link_path().unwrap()
+        );
+        let alpha_link = link_project_with_provider_and_db(
+            project.path(),
+            &mut provider,
+            &resolution,
+            request(&items[0].id, None),
+        )
+        .unwrap();
+        assert_eq!(
+            alpha_link.link_path,
+            items[0].default_project_link_path().unwrap()
+        );
+        store.create_group("daily", None).unwrap();
+        assert_eq!(
+            store
+                .add_group_items("daily", &["beta".into()])
+                .unwrap()
+                .group
+                .items[0]
+                .id,
+            items[1].id
+        );
+        let before_manifest = fs::read(super::manifest_path(project.path())).unwrap();
+        let before_entries: Vec<_> = [&alpha_link, &beta_link]
+            .iter()
+            .map(|link| {
+                provider
+                    .entry(&project.path().join(&link.link_path))
+                    .cloned()
+            })
+            .collect();
+        let renamed = store.rename_item(item_type, "beta", "renamed").unwrap();
+        assert_eq!(renamed.id, items[1].id);
+        assert_eq!(renamed.alias, items[1].alias);
+        assert_eq!(
+            fs::read(super::manifest_path(project.path())).unwrap(),
+            before_manifest
+        );
+        for (link, entry) in [&alpha_link, &beta_link].iter().zip(before_entries) {
+            assert_eq!(
+                provider
+                    .entry(&project.path().join(&link.link_path))
+                    .cloned(),
+                entry
+            );
+        }
+        for item in &items {
+            let content_path = if item_type == LinkableItemType::Skill {
+                item.source_path.join("SKILL.md")
+            } else {
+                item.source_path.clone()
+            };
+            assert_eq!(fs::read_to_string(content_path).unwrap(), item.name);
+        }
+        let removed =
+            unlink_project_with_provider(project.path(), &mut provider, Some(items[1].id.clone()))
+                .unwrap();
+        assert_eq!(removed.outcomes.len(), 1);
+        assert!(provider
+            .entry(&project.path().join(&beta_link.link_path))
+            .is_none());
+        let overridden = link_project_with_provider_and_db(
+            project.path(),
+            &mut provider,
+            &resolution,
+            request("renamed", Some("custom")),
+        )
+        .unwrap();
+        assert_eq!(overridden.link_path.file_name().unwrap(), "custom");
+        assert_eq!(
+            store
+                .find_item(item_type, "renamed")
+                .unwrap()
+                .alias
+                .as_deref(),
+            Some("gamma")
+        );
+        let removed = unlink_group_project_with_provider_and_db(
+            project.path(),
+            &mut provider,
+            &resolution,
+            "daily",
+        )
+        .unwrap();
+        assert_eq!(removed.outcomes.len(), 1);
+        assert!(provider
+            .entry(&project.path().join(&overridden.link_path))
+            .is_none());
+        assert!(provider
+            .entry(&project.path().join(&alpha_link.link_path))
+            .is_some());
+        let manifest = load_manifest(project.path()).unwrap();
+        assert_eq!(manifest.links.len(), 1);
+        assert_eq!(manifest.links[0].item_id, items[0].id);
+    }
+}
+
+#[test]
+fn force_dry_run_and_execution_agree_and_preserve_state_on_rejection() {
+    for scenario in [
+        "wrong",
+        "dangling",
+        "missing-source",
+        "wrong-kind",
+        "file",
+        "directory",
+    ] {
+        for force in [false, true] {
+            let project = TestDir::new("force-parity");
+            fs::create_dir_all(project.path().join(".agents/skills")).unwrap();
+            save_empty_manifest(project.path());
+            let source = seed_skill_source(&project);
+            let resolution = database(&project);
+            let store = Store::open_rw(&resolution).unwrap();
+            let item = store
+                .add_item(AddLinkableItem {
+                    item_type: LinkableItemType::Skill,
+                    name: "writer".to_string(),
+                    alias: None,
+                    source_path: source.clone(),
+                    default_target_dir: None,
+                    description: None,
+                })
+                .unwrap();
+            let mut provider = seed_provider(project.path(), &source);
+            let link = project.path().join(".agents/skills/writer");
+            let old = project.path().join("old");
+            if scenario == "wrong" {
+                provider.add_dir(&old);
+            }
+            match scenario {
+                "file" => provider.add_file(&link),
+                "directory" => provider.add_dir(&link),
+                _ => provider.add_symlink(&link, &old, LinkKind::Directory),
+            }
+            if scenario == "missing-source" {
+                fs::remove_dir_all(&source).unwrap();
+            } else if scenario == "wrong-kind" {
+                fs::remove_dir_all(&source).unwrap();
+                fs::write(&source, "wrong kind").unwrap();
+                provider.add_file(&item.source_path);
+            }
+            let original = provider.entry(&link).cloned();
+            let manifest_before = fs::read(super::manifest_path(project.path())).unwrap();
+            let request = || LinkItemRequest {
+                identifier: "writer".to_string(),
+                link_name_override: None,
+                target_dir_override: None,
+            };
+            let planned = link_project_with_provider_and_db_with_options(
+                project.path(),
+                &mut provider,
+                &resolution,
+                request(),
+                LinkOptions {
+                    dry_run: true,
+                    force,
+                },
+            );
+            assert_eq!(provider.entry(&link), original.as_ref(), "{scenario}");
+            assert_eq!(
+                fs::read(super::manifest_path(project.path())).unwrap(),
+                manifest_before,
+                "{scenario}"
+            );
+            let actual = link_project_with_provider_and_db_with_options(
+                project.path(),
+                &mut provider,
+                &resolution,
+                request(),
+                LinkOptions {
+                    dry_run: false,
+                    force,
+                },
+            );
+            match (planned, actual) {
+                (Ok(planned), Ok(actual)) => {
+                    assert!(force && matches!(scenario, "wrong" | "dangling"));
+                    assert_eq!(planned.outcome, CreateSymlinkOutcome::ReplacedWrongSymlink);
+                    assert_eq!(actual.outcome, planned.outcome);
+                    assert_eq!(
+                        provider.entry(&link),
+                        Some(&MockEntry::Symlink {
+                            target: item.source_path.clone(),
+                            kind: LinkKind::Directory,
+                        })
+                    );
+                    assert_eq!(load_manifest(project.path()).unwrap().links.len(), 1);
+                }
+                (Err(planned), Err(actual)) => {
+                    assert_eq!(planned.to_string(), actual.to_string(), "{scenario}");
+                    assert_eq!(provider.entry(&link), original.as_ref(), "{scenario}");
+                    assert_eq!(
+                        fs::read(super::manifest_path(project.path())).unwrap(),
+                        manifest_before,
+                        "{scenario}"
+                    );
+                }
+                _ => panic!("dry-run and execution disagree: {scenario}, force={force}"),
+            }
+        }
+    }
+}
+
+#[test]
+fn project_replacement_failure_keeps_old_link_and_manifest_bytes() {
+    let project = TestDir::new("force-failure");
+    fs::create_dir_all(project.path().join(".agents/skills")).unwrap();
+    save_empty_manifest(project.path());
+    let source = seed_skill_source(&project);
+    let resolution = database(&project);
+    let store = Store::open_rw(&resolution).unwrap();
+    store
+        .add_item(AddLinkableItem {
+            item_type: LinkableItemType::Skill,
+            name: "writer".to_string(),
+            alias: None,
+            source_path: source.clone(),
+            default_target_dir: None,
+            description: None,
+        })
+        .unwrap();
+    let mut provider = seed_provider(project.path(), &source);
+    let link = project.path().join(".agents/skills/writer");
+    provider.add_symlink(
+        &link,
+        project.path().join("old-missing"),
+        LinkKind::Directory,
+    );
+    let before = provider.entry(&link).cloned();
+    let manifest_before = fs::read(super::manifest_path(project.path())).unwrap();
+    provider.fail_next_replacement();
+    let error = link_project_with_provider_and_db_with_options(
+        project.path(),
+        &mut provider,
+        &resolution,
+        LinkItemRequest {
+            identifier: "writer".to_string(),
+            link_name_override: None,
+            target_dir_override: None,
+        },
+        LinkOptions {
+            dry_run: false,
+            force: true,
+        },
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("injected replacement failure"));
+    assert_eq!(provider.entry(&link), before.as_ref());
+    assert_eq!(
+        fs::read(super::manifest_path(project.path())).unwrap(),
+        manifest_before
+    );
+}
+
+#[test]
+fn group_and_all_unlink_preserve_harness_and_follow_current_member_ids() {
+    let project = TestDir::new("unlink-origins");
+    let resolution = database(&project);
+    let store = Store::open_rw(&resolution).unwrap();
+    let source = seed_skill_source(&project);
+    let writer = store
+        .add_item(AddLinkableItem {
+            item_type: LinkableItemType::Skill,
+            name: "writer".into(),
+            alias: None,
+            source_path: source.clone(),
+            default_target_dir: None,
+            description: None,
+        })
+        .unwrap();
+    let notes_source = project.path().join("notes.md");
+    fs::write(&notes_source, "notes\n").unwrap();
+    store
+        .add_item(AddLinkableItem {
+            item_type: LinkableItemType::Resource,
+            name: "notes".into(),
+            alias: None,
+            source_path: notes_source.clone(),
+            default_target_dir: Some(PathBuf::from("docs")),
+            description: None,
+        })
+        .unwrap();
+    let mut provider = seed_provider(project.path(), &source);
+    provider.add_file(project.path().join("AGENTS.md"));
+    provider.add_dir(project.path().join(".claude"));
+    provider.add_dir(project.path().join("docs"));
+    provider.add_file(crate::core::test_support::canonical_path(&notes_source));
+    crate::core::manifest::init_project_with_mappings(
+        project.path(),
+        &mut provider,
+        &crate::core::harness::default_init_mappings(),
+    )
+    .unwrap();
+    for (identifier, alias) in [
+        ("writer", Some("writer-a")),
+        ("writer", Some("writer-b")),
+        ("notes", None),
+    ] {
+        link_project_with_provider_and_db(
+            project.path(),
+            &mut provider,
+            &resolution,
+            LinkItemRequest {
+                identifier: identifier.into(),
+                link_name_override: alias.map(str::to_string),
+                target_dir_override: None,
+            },
+        )
+        .unwrap();
+    }
+    store.create_group("daily", None).unwrap();
+    store
+        .add_group_items("daily", &["writer".into(), "notes".into()])
+        .unwrap();
+    store
+        .remove_group_items("daily", &["notes".into()])
+        .unwrap();
+    let before_rename = fs::read(super::manifest_path(project.path())).unwrap();
+    let renamed = store
+        .rename_item(LinkableItemType::Skill, "writer", "author")
+        .unwrap();
+    assert_eq!(renamed.id, writer.id);
+    assert_eq!(
+        fs::read(super::manifest_path(project.path())).unwrap(),
+        before_rename
+    );
+    let mut manifest = load_manifest(project.path()).unwrap();
+    assert_eq!(
+        manifest
+            .links
+            .iter()
+            .filter(|record| record.item_id == writer.id)
+            .count(),
+        2
+    );
+    // Even an infrastructure record sharing a member ID is outside group unlink.
+    manifest.links[0].item_id = writer.id.clone();
+    save_manifest(project.path(), &manifest).unwrap();
+    let harness_records: Vec<_> = manifest
+        .links
+        .iter()
+        .filter(|r| r.origin == LinkOrigin::Harness)
+        .cloned()
+        .collect();
+    let harness_entries: Vec<_> = harness_records
+        .iter()
+        .map(|r| provider.entry(&project.path().join(&r.link_path)).cloned())
+        .collect();
+    let report = unlink_group_project_with_provider_and_db(
+        project.path(),
+        &mut provider,
+        &resolution,
+        "daily",
+    )
+    .unwrap();
+    assert_eq!(report.outcomes.len(), 2);
+    assert!(provider
+        .entry(&project.path().join(".agents/skills/writer-a"))
+        .is_none());
+    assert!(provider
+        .entry(&project.path().join(".agents/skills/writer-b"))
+        .is_none());
+    let remaining = load_manifest(project.path()).unwrap();
+    assert_eq!(remaining.links.len(), 3);
+    assert!(remaining.links.iter().any(|r| r.item_name == "notes"));
+    let before_dry_run = fs::read(super::manifest_path(project.path())).unwrap();
+    let dry_run = unlink_project_with_provider_with_options(
+        project.path(),
+        &mut provider,
+        None,
+        UnlinkOptions { dry_run: true },
+    )
+    .unwrap();
+    assert_eq!(dry_run.outcomes.len(), 1);
+    assert_eq!(
+        fs::read(super::manifest_path(project.path())).unwrap(),
+        before_dry_run
+    );
+    let report = unlink_project_with_provider(project.path(), &mut provider, None).unwrap();
+    assert_eq!(report.outcomes.len(), 1);
+    assert_eq!(
+        load_manifest(project.path()).unwrap().links,
+        harness_records
+    );
+    for (record, entry) in harness_records.iter().zip(harness_entries) {
+        assert_eq!(
+            provider
+                .entry(&project.path().join(&record.link_path))
+                .cloned(),
+            entry
+        );
+    }
 }

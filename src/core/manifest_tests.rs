@@ -138,7 +138,7 @@ created_at = "unix:1"
 updated_at = "unix:1"
 "#;
     let manifest = parse_manifest(legacy).unwrap();
-    assert_eq!(manifest.links[0].harness_name, "claude");
+    assert_eq!(manifest.links[0].harness_name.as_deref(), Some("claude"));
     assert_eq!(manifest.links[0].id, "init:claude:agents-md");
     let saved = serialize_manifest(&manifest);
     assert!(saved.contains("framework_name = \"claude\""));
@@ -194,7 +194,7 @@ fn init_creates_project_files_links_manifest_and_gitignore() {
     let manifest = load_manifest(temp_dir.path()).unwrap();
     assert_eq!(manifest.links.len(), 2);
     assert!(manifest.links.iter().any(|link| {
-        link.harness_name == "claude"
+        link.harness_name.as_deref() == Some("claude")
             && link.source_path == PathBuf::from("AGENTS.md")
             && link.link_path == PathBuf::from("CLAUDE.md")
     }));
@@ -307,7 +307,10 @@ fn explicit_mappings_drive_mock_init_and_preserve_harness_provenance() {
     assert!(provider.entry(&project.path().join("CLAUDE.md")).is_none());
     let manifest = load_manifest(project.path()).unwrap();
     assert_eq!(manifest.links.len(), 1);
-    assert_eq!(manifest.links[0].harness_name, "custom-harness");
+    assert_eq!(
+        manifest.links[0].harness_name.as_deref(),
+        Some("custom-harness")
+    );
     let first = fs::read(super::manifest_path(project.path())).unwrap();
     super::init_project_with_mappings(project.path(), &mut provider, &[mapping]).unwrap();
     assert_eq!(
@@ -401,8 +404,231 @@ fn mock_init_reads_custom_enabled_mappings_while_another_writer_is_active() {
     super::init_project_with_store(project.path(), &mut provider, &resolution).unwrap();
     let manifest = load_manifest(project.path()).unwrap();
     assert_eq!(manifest.links.len(), 1);
-    assert_eq!(manifest.links[0].harness_name, "custom");
+    assert_eq!(manifest.links[0].harness_name.as_deref(), Some("custom"));
     assert_eq!(manifest.links[0].link_path, PathBuf::from("CUSTOM.md"));
     assert!(provider.entry(&project.path().join("CLAUDE.md")).is_none());
     c.execute_batch("ROLLBACK;").unwrap();
+}
+
+#[test]
+fn atomic_save_creates_and_replaces_existing_manifest() {
+    let project = TestDir::new("atomic-save");
+    save_manifest(project.path(), &Manifest::empty()).unwrap();
+    assert_eq!(load_manifest(project.path()).unwrap(), Manifest::empty());
+    let replacement = Manifest {
+        schema_version: 1,
+        links: vec![super::record_from_mapping(
+            &crate::core::harness::default_init_mappings()[0],
+            crate::core::symlink::SymlinkBackend::Mock,
+        )],
+    };
+    save_manifest(project.path(), &replacement).unwrap();
+    assert_eq!(load_manifest(project.path()).unwrap(), replacement);
+    assert_eq!(
+        fs::read_dir(project.path().join(".agents"))
+            .unwrap()
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn atomic_save_temporary_creation_failure_preserves_original_and_occupied_path() {
+    let project = TestDir::new("atomic-temp-failure");
+    save_manifest(project.path(), &Manifest::empty()).unwrap();
+    let original = fs::read(super::manifest_path(project.path())).unwrap();
+    let temporary = project
+        .path()
+        .join(".agents")
+        .join(format!(".links.toml.tmp.{}", std::process::id()));
+    fs::write(&temporary, "occupied temporary file").unwrap();
+    assert!(save_manifest(project.path(), &Manifest::empty()).is_err());
+    assert_eq!(fs::read(&temporary).unwrap(), b"occupied temporary file");
+    assert_eq!(
+        fs::read(super::manifest_path(project.path())).unwrap(),
+        original
+    );
+    fs::remove_file(&temporary).unwrap();
+    fs::create_dir(&temporary).unwrap();
+    assert!(save_manifest(project.path(), &Manifest::empty()).is_err());
+    assert!(temporary.is_dir());
+    assert_eq!(
+        fs::read(super::manifest_path(project.path())).unwrap(),
+        original
+    );
+}
+
+#[test]
+fn atomic_save_partial_write_failure_preserves_original() {
+    let project = TestDir::new("atomic-write-failure");
+    save_manifest(project.path(), &Manifest::empty()).unwrap();
+    let original = fs::read(super::manifest_path(project.path())).unwrap();
+    let result = super::save_manifest_with_io(
+        project.path(),
+        &Manifest::empty(),
+        |file, content| {
+            std::io::Write::write_all(file, &content[..content.len() / 2])?;
+            Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "injected partial write failure",
+            ))
+        },
+        |_, _| panic!("a failed write must not rename the temporary file"),
+    );
+    assert!(result.is_err());
+    assert_eq!(
+        fs::read(super::manifest_path(project.path())).unwrap(),
+        original
+    );
+    assert_eq!(
+        fs::read_dir(project.path().join(".agents"))
+            .unwrap()
+            .count(),
+        1
+    );
+    save_manifest(project.path(), &Manifest::empty()).unwrap();
+    assert_eq!(load_manifest(project.path()).unwrap(), Manifest::empty());
+}
+
+#[test]
+fn atomic_save_rename_failure_preserves_original() {
+    let project = TestDir::new("atomic-rename-failure");
+    save_manifest(project.path(), &Manifest::empty()).unwrap();
+    let original = fs::read(super::manifest_path(project.path())).unwrap();
+    let replacement = Manifest {
+        schema_version: 1,
+        links: vec![super::record_from_mapping(
+            &crate::core::harness::default_init_mappings()[0],
+            crate::core::symlink::SymlinkBackend::Mock,
+        )],
+    };
+    let result = super::save_manifest_with_io(
+        project.path(),
+        &replacement,
+        |file, content| std::io::Write::write_all(file, content),
+        |source, destination| {
+            assert_eq!(source.parent(), destination.parent());
+            assert_eq!(
+                fs::read_to_string(source).unwrap(),
+                serialize_manifest(&replacement)
+            );
+            assert_eq!(fs::read(destination).unwrap(), original);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "injected rename failure",
+            ))
+        },
+    );
+    assert!(result.is_err());
+    assert_eq!(
+        fs::read(super::manifest_path(project.path())).unwrap(),
+        original
+    );
+    assert_eq!(load_manifest(project.path()).unwrap(), Manifest::empty());
+    assert_eq!(
+        fs::read_dir(project.path().join(".agents"))
+            .unwrap()
+            .count(),
+        1
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn atomic_save_windows_locked_destination_preserves_original_and_allows_retry() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let project = TestDir::new("atomic-windows-replace");
+    save_manifest(project.path(), &Manifest::empty()).unwrap();
+    let path = super::manifest_path(project.path());
+    let original = fs::read(&path).unwrap();
+    let replacement = Manifest {
+        schema_version: 1,
+        links: vec![super::record_from_mapping(
+            &crate::core::harness::default_init_mappings()[0],
+            crate::core::symlink::SymlinkBackend::Mock,
+        )],
+    };
+    // Permit reads while denying delete sharing, which Windows rename requires.
+    let locked = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(&path)
+        .unwrap();
+    assert!(save_manifest(project.path(), &replacement).is_err());
+    assert_eq!(fs::read(&path).unwrap(), original);
+    assert_eq!(
+        fs::read_dir(project.path().join(".agents"))
+            .unwrap()
+            .count(),
+        1
+    );
+    drop(locked);
+    save_manifest(project.path(), &replacement).unwrap();
+    assert_eq!(load_manifest(project.path()).unwrap(), replacement);
+}
+
+#[test]
+fn legacy_registry_and_mixed_manifests_preserve_records() {
+    let project = TestDir::new("legacy-origins");
+    let harness = super::record_from_mapping(
+        &crate::core::harness::default_init_mappings()[0],
+        crate::core::symlink::SymlinkBackend::Mock,
+    );
+    let mut item = harness.clone();
+    item.id = "link:stable-id:docs/notes".into();
+    item.origin = super::LinkOrigin::Item;
+    item.harness_name = None;
+    item.item_id = "stable-id".into();
+    item.item_name = "notes".into();
+    item.link_path = PathBuf::from("docs/notes");
+    item.created_by_command = "link".into();
+    item.created_at = 12;
+    item.updated_at = 34;
+    for links in [vec![item.clone()], vec![harness.clone(), item.clone()]] {
+        let expected = Manifest {
+            schema_version: 1,
+            links,
+        };
+        let legacy = serialize_manifest(&expected)
+            .replace(
+                "origin = \"item\"",
+                "scope = \"project\"\nframework_name = \"registry\"",
+            )
+            .replace("origin = \"harness\"", "scope = \"project\"");
+        let parsed = parse_manifest(&legacy).unwrap();
+        assert_eq!(parsed, expected);
+        save_manifest(project.path(), &parsed).unwrap();
+        assert_eq!(load_manifest(project.path()).unwrap(), expected);
+        let saved = fs::read_to_string(super::manifest_path(project.path())).unwrap();
+        assert!(!saved.contains("scope ="));
+        assert!(!saved.contains("framework_name = \"registry\""));
+    }
+    // Explicit new entries and legacy entries can coexist in one manifest.
+    let mixed = serialize_manifest(&Manifest {
+        schema_version: 1,
+        links: vec![harness, item],
+    })
+    .replace("origin = \"harness\"", "scope = \"project\"");
+    assert_eq!(parse_manifest(&mixed).unwrap().links.len(), 2);
+}
+
+#[test]
+fn manifest_rejects_unknown_origins_and_inconsistent_harness_names() {
+    let harness = super::record_from_mapping(
+        &crate::core::harness::default_init_mappings()[0],
+        crate::core::symlink::SymlinkBackend::Mock,
+    );
+    let text = serialize_manifest(&Manifest {
+        schema_version: 1,
+        links: vec![harness],
+    });
+    for invalid in [
+        text.replace("origin = \"harness\"", "origin = \"unknown\""),
+        text.replace("origin = \"harness\"", "origin = \"item\""),
+        text.replace("framework_name = \"claude\"\n", ""),
+        text.replace("framework_name = \"claude\"", "framework_name = \"\""),
+    ] {
+        assert!(parse_manifest(&invalid).is_err(), "{invalid}");
+    }
 }

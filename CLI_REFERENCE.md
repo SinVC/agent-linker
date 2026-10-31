@@ -5,13 +5,13 @@
 ## General Conventions
 
 - **Scope and Decoupling**:
-  - **The current working directory is always the project root** (`aglink` never searches parent directories). `init`, `link`, `unlink`, `status`, and `clean` operate on the current project; `skill`, `resource`, `group`, `db`, and `harness` operate on the global database; `doctor` inspects both.
+  - **`init` uses the current working directory; project commands search upward for the nearest `.agents/links.toml`**, stopping at a filesystem root or symlink directory. `init`, `link`, `unlink`, `status`, and `clean` operate on the current project; `skill`, `resource`, `group`, `db`, and `harness` operate on the global database; `doctor` inspects both.
   - **Global and project states are decoupled**: mutating the global database (renaming, unregistering, modifying groups, or changing harness settings) never alters existing project symlinks or manifest records.
 - **Paths and Naming**:
   - Registered source paths are resolved relative to the current working directory and stored as canonicalized absolute paths.
   - Project target directories and harness mapping paths must be relative to the project root (absolute paths and `..` segments are rejected).
   - Item names, aliases (`--alias`), group names, and link overrides (`--as`) must be non-empty single path segments without `/\<>:"|?*` or standalone `.` / `..`.
-- **Manifest and Non-transactional Execution**: Running `init` beforehand is not required. A missing manifest is treated as empty; a malformed manifest returns an error. `link` creates missing real parent directories and updates the manifest (failing if any parent segment is a symlink), without scaffolding the rest of the `init` layout. `--dry-run` previews operations without modifying project files or the manifest. Filesystem operations are not transactional: execution stops on the first error without rolling back prior changes.
+- **Manifest and Non-transactional Execution**: Project commands require an initialized project containing `.agents/links.toml`; run `aglink init` if none is found. A malformed manifest returns an error. `link` creates missing real parent directories and updates the manifest (failing if any parent segment is a symlink), without scaffolding the rest of the `init` layout. `--dry-run` previews operations without modifying project files or the manifest. Filesystem operations are not transactional: execution stops on the first error without rolling back prior changes.
 - **File Safety**:
   - `aglink` never copies, moves, or deletes source files, and never overwrites or deletes real files or directories.
   - Re-linking an existing symlink that already points to the expected target succeeds and records it in the manifest. `--force` **only replaces symlinks pointing to the wrong target**—it never overwrites real files/directories or claims a manifest path owned by another entry.
