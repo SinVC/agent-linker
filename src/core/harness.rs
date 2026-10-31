@@ -190,10 +190,10 @@ impl Store {
                 std::path::Component::Normal(value) => Some(path_to_db_text(Path::new(value), "link path")),
                 _ => None,
             }).collect::<Result<Vec<_>>>()?.join("/");
-            let key = managed_relative_path_key(&request.link_path);
+            let key = mapping_path_key(&request.link_path);
             // Older records retain their spelling; compare their managed path keys.
             if list_harness_mappings(connection, Some(&harness_id))?.iter()
-                .any(|mapping| managed_relative_path_key(&mapping.link_path) == key)
+                .any(|mapping| mapping_path_key(&mapping.link_path) == key)
             {
                 return Err(Error::invalid_arguments(format!("harness mapping destination already exists: {link_text}")));
             }
@@ -211,14 +211,14 @@ impl Store {
             validate_mapping_path(link_path, "link path")?;
             let harness_id = find_harness_id(connection, harness)?;
             let mappings = list_harness_mappings(connection, Some(&harness_id))?;
-            let key = managed_relative_path_key(link_path);
+            let key = mapping_path_key(link_path);
             let mapping = mappings
                 .iter()
                 .find(|mapping| mapping.link_path.as_os_str() == link_path.as_os_str())
                 .or_else(|| {
                     mappings
                         .iter()
-                        .find(|mapping| managed_relative_path_key(&mapping.link_path) == key)
+                        .find(|mapping| mapping_path_key(&mapping.link_path) == key)
                 })
                 .ok_or_else(|| {
                     Error::database(format!(
@@ -345,6 +345,12 @@ fn find_mapping_by_id(connection: &rusqlite::Connection, id: &str) -> Result<Sto
             stored_mapping_from_row,
         )
         .map_err(Error::from)
+}
+
+fn mapping_path_key(path: &Path) -> String {
+    managed_relative_path_key(path)
+        .to_string_lossy()
+        .to_ascii_lowercase()
 }
 
 fn validate_mapping_path(path: &Path, label: &str) -> Result<()> {

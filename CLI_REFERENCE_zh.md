@@ -43,7 +43,7 @@ aglink clean [--broken | --missing-source] [--dry-run]
 aglink doctor
 ```
 
-- **`init`**：幂等初始化项目（不支持 `--dry-run`/`--force`）。创建缺失的空文件 `AGENTS.md` 及 `.agents/`、`.agents/skills/`（保留已有内容）；只读加载全局库中已启用 Harness 的映射并写入清单；缺库时使用同一内置 Claude 默认映射，不创建全局库（已是正确链接则跳过，源类型不符或目标冲突则报错）；在 `.gitignore` 中维护受管区块（写入 `.claude/`、`.agents/skills/`、`.agents/links.toml`）。
+- **`init`**：幂等初始化项目（不支持 `--dry-run`/`--force`）。创建缺失的空文件 `AGENTS.md` 及 `.agents/`、`.agents/skills/`（保留已有内容）；只读加载全局库中已启用 Harness 的映射并写入清单；缺库时使用同一内置 Claude 默认映射，不创建全局库（已是正确链接则跳过，源类型不符或目标冲突则报错）；在 `.gitignore` 中维护受管区块（写入 `.claude/`、`.agents/`）。
 - **`status [--json]`**：仅检查清单中的记录，不扫描未纳管链接，也不执行修复。`--json` 顶层含 `project_root`、`manifest_path`、`links`（每项含清单 `id`、`item_id`、`item_name`、`link_path`、`source_path`、`link_kind`［`file`/`directory`］、`provider_backend`、`status`）。
 
 | `links[].status` | 含义 |
@@ -71,8 +71,8 @@ aglink unlink --all [--dry-run]
 - **`link`**：校验源存在性、类型及 `SKILL.md` 有效性。`--target-dir` 仅适用于 Resource。`--group` 使用成员各自的默认路径（不支持 `--as`/`--target-dir`），按成员逐项执行。
 - **`unlink`**：`<selector>`、`--group`、`--all` 三选一。执行前先校验全部选中项，遇真实文件/目录则整体中止，不做部分删除。
   - `<selector>` **仅查项目清单（不访问数据库）**：接受清单 ID、`item_id`、清单记录名、项目相对链接路径或链接末段名。须唯一匹配一条记录，多条匹配时用清单 ID 或完整相对路径消歧。
-  - `--group <group>`：按分组**当前成员 ID** 匹配清单中的所有对应链接（已移出组的成员不选）。
-  - `--all`：解除清单中的所有链接（含 `init` 创建的兼容链接；不访问数据库）。
+  - `--group <group>`：按分组**当前成员 ID** 匹配 item 来源链接（已移出组的成员不选），保留 Harness 链接。
+  - `--all`：解除所有 item 来源链接，保留 Harness 链接（不访问数据库）。
 
 ## Skill 与 Resource 注册
 

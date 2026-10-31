@@ -43,7 +43,7 @@ aglink clean [--broken | --missing-source] [--dry-run]
 aglink doctor
 ```
 
-- **`init`**: Idempotently scaffolds the current project (no `--dry-run` or `--force`). Creates missing `AGENTS.md` (empty file), `.agents/`, and `.agents/skills/` (preserving existing content); reads enabled harness mappings from the initialized global database and records created links in the manifest (when the database is missing, falls back to the same built-in Claude mappings without initializing it) (skipping existing valid symlinks, failing on mismatched source types or target conflicts); updates the `aglink` managed block in `.gitignore` (`.claude/`, `.agents/skills/`, `.agents/links.toml`).
+- **`init`**: Idempotently scaffolds the current project (no `--dry-run` or `--force`). Creates missing `AGENTS.md` (empty file), `.agents/`, and `.agents/skills/` (preserving existing content); reads enabled harness mappings from the initialized global database and records created links in the manifest (when the database is missing, falls back to the same built-in Claude mappings without initializing it) (skipping existing valid symlinks, failing on mismatched source types or target conflicts); updates the `aglink` managed block in `.gitignore` (`.claude/`, `.agents/`).
 - **`status [--json]`**: Inspects only manifest entries without scanning for untracked symlinks or repairing links. `--json` outputs `project_root`, `manifest_path`, and `links` (each containing manifest `id`, `item_id`, `item_name`, `link_path`, `source_path`, `link_kind` [`file`/`directory`], `provider_backend`, and `status`).
 
 | `links[].status` | Description |
@@ -71,8 +71,8 @@ aglink unlink --all [--dry-run]
 - **`link`**: Validates source existence, type, and `SKILL.md` content. `--target-dir` applies only to Resources. `--group` links each member sequentially using its default path (`--as` and `--target-dir` are not supported).
 - **`unlink`**: Requires exactly one of `<selector>`, `--group`, or `--all`. Pre-validates all selected targets before making changes; if any target is a real file/directory or unsupported type, the entire command aborts without partial deletions.
   - `<selector>` **queries only the project manifest (without accessing the database)**: accepts a manifest ID, `item_id`, recorded `item_name`, project-relative `link_path`, or link basename. Must match exactly one entry; disambiguate multiple matches with the manifest ID or full relative path.
-  - `--group <group>`: Selects all manifest entries matching the group's **current member IDs** (items removed from the group after linking are not selected).
-  - `--all`: Selects all manifest entries, including `init` harness links (without accessing the database).
+  - `--group <group>`: Selects item links matching the group's **current member IDs** (items removed from the group after linking are not selected); harness links are retained.
+  - `--all`: Selects all item links while retaining harness links (without accessing the database).
 
 ## Skill and Resource Registry
 

@@ -54,7 +54,7 @@ Harness mapping 至少包含：
 - Harness name 大小写无关唯一，mapping 的 `(harness_id, link_path)` 大小写无关唯一；所有写操作由同一 Store 事务完成。
 - 后续 Harness 沿用相同 mapping 模型。
 - mapping 创建 symlink 时必须走 Symlink Core。
-- 新 mapping 的 link_path 去除 `./`、归一分隔符后存储；同 Harness 按受控路径键与旧记录判重。删除优先原始字面匹配，其次路径键匹配，按 ID 删除；历史等价重复不自动合并，可逐条删除。source_path 不额外规范化。
+- 新 mapping 的 link_path 去除 `./`、按当前平台路径分隔符归一后存储；同 Harness 按受控路径键与旧记录判重，并至少按 SQLite NOCASE 规则忽略 ASCII 大小写。Windows 保留受控路径键的大小写处理。删除优先原始字面匹配，其次按相同口径匹配，按 ID 删除；历史等价重复不自动合并，可逐条删除。Unix 的反斜杠是文件名字符。source_path 不额外规范化。
 
 ## 验收口径
 
