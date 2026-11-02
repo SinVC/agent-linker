@@ -10,12 +10,9 @@ use crate::core::{
     store::{self, Store},
     symlink::default_provider,
 };
-use std::path::Path;
+use std::{fs, path::Path, path::PathBuf};
 #[cfg(windows)]
-use std::{
-    fs,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::sync::atomic::{AtomicU64, Ordering};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DoctorReport {
     pub checks: Vec<DoctorCheck>,
@@ -34,6 +31,15 @@ pub fn doctor_project(
     project_root: &Path,
     resolution: &DbPathResolution,
     verbose: bool,
+) -> DoctorReport {
+    doctor_project_with_probe(project_root, resolution, verbose, check_broker_probe)
+}
+
+pub fn doctor_project_with_probe(
+    project_root: &Path,
+    resolution: &DbPathResolution,
+    verbose: bool,
+    broker_probe: impl FnOnce(bool) -> DoctorCheck,
 ) -> DoctorReport {
     let mut checks = Vec::new();
 
@@ -136,10 +142,66 @@ pub fn doctor_project(
     });
     drop(provider);
 
-    checks.push(check_broker_probe(verbose));
+    checks.push(broker_probe(verbose));
 
     let ok = checks.iter().all(|check| check.ok);
     DoctorReport { checks, ok }
+}
+
+#[derive(Debug)]
+pub(crate) struct ProbeDirGuard {
+    path: PathBuf,
+}
+
+impl ProbeDirGuard {
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for ProbeDirGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+pub(crate) fn create_exclusive_probe_dir_in(
+    base_dir: &Path,
+    mut next_name: impl FnMut() -> String,
+    max_attempts: usize,
+) -> std::io::Result<ProbeDirGuard> {
+    for _ in 0..max_attempts {
+        let candidate = base_dir.join(next_name());
+        match fs::create_dir(&candidate) {
+            Ok(()) => return Ok(ProbeDirGuard { path: candidate }),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "failed to create exclusive probe directory after maximum attempts",
+    ))
+}
+
+#[cfg(windows)]
+static BROKER_PROBE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(windows)]
+fn create_exclusive_probe_dir() -> std::io::Result<ProbeDirGuard> {
+    create_exclusive_probe_dir_in(
+        &std::env::temp_dir(),
+        || {
+            let counter = BROKER_PROBE_COUNTER.fetch_add(1, Ordering::Relaxed);
+            format!(
+                "agent-linker-broker-probe-{}-{}-{}",
+                std::process::id(),
+                crate::core::util::timestamp_nanos(),
+                counter
+            )
+        },
+        10,
+    )
 }
 
 fn check_broker_probe(verbose: bool) -> DoctorCheck {
@@ -155,24 +217,31 @@ fn check_broker_probe(verbose: bool) -> DoctorCheck {
             };
         }
 
-        let probe_root = std::env::temp_dir().join(format!(
-            "agent-linker-broker-probe-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_nanos())
-        ));
+        let guard = match create_exclusive_probe_dir() {
+            Ok(guard) => guard,
+            Err(error) => {
+                return DoctorCheck {
+                    name: "windows-broker".to_string(),
+                    ok: false,
+                    summary: format!("failed to create probe directory: {error}"),
+                    details: verbose
+                        .then(|| vec![format!("error={error}")])
+                        .unwrap_or_default(),
+                };
+            }
+        };
+
+        let probe_root = guard.path().to_path_buf();
         let source = probe_root.join("source.txt");
         let link = probe_root.join("link.txt");
 
         let probe = (|| -> Result<()> {
-            fs::create_dir_all(&probe_root)?;
             fs::write(&source, "probe")?;
             provider.create_symlink(&source, &link, crate::core::symlink::LinkKind::File)?;
             provider.remove_symlink(&link)?;
             Ok(())
         })();
-        let _ = fs::remove_dir_all(&probe_root);
+        drop(guard);
 
         match probe {
             Ok(()) => DoctorCheck {
