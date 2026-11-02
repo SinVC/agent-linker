@@ -2,7 +2,7 @@
 
 use crate::core::error::{Error, Result};
 use std::{
-    env, fs,
+    env, fs, io,
     path::{Component, Path, PathBuf},
 };
 
@@ -227,10 +227,11 @@ fn resolve_database_path_raw(context: &DbPathContext) -> Result<DbPathResolution
                             || receipt["product"] != "agent-linker"
                             || receipt["portable"] != false
                         {
-                            return Err(path_error(
-                                &receipt_path,
+                            return Err(Error::parse(io::Error::new(
+                                io::ErrorKind::InvalidData,
                                 "invalid Windows installation receipt",
-                            ));
+                            ))
+                            .at_path(&receipt_path));
                         }
                         return Ok(DbPathResolution {
                             path: root.join("data").join(DB_FILE_NAME),
@@ -617,7 +618,22 @@ mod tests {
             .to_string()
             .contains("install-receipt.json"));
         fs::write(root.join("install-receipt.json"), r#"{"product":"other"}"#).unwrap();
-        assert!(resolve_database_path_with(&context).is_err());
+        let err = resolve_database_path_with(&context).unwrap_err();
+        assert!(
+            matches!(err, Error::Parse { .. }),
+            "expected Error::Parse, got {err:?}"
+        );
+        let receipt_file = root.join("install-receipt.json");
+        assert_eq!(err.path(), Some(receipt_file.as_path()));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid Windows installation receipt"),
+            "missing diagnostic: {msg}"
+        );
+        assert!(
+            msg.contains("install-receipt.json"),
+            "missing path in display: {msg}"
+        );
     }
 
     #[test]

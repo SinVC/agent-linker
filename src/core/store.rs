@@ -121,12 +121,12 @@ impl Store {
 }
 fn require_latest(connection: &Connection, path: &Path) -> Result<()> {
     match schema_version(connection)? {
-        v if v < LATEST_SCHEMA_VERSION => Err(path_error(
-            path,
+        v if v < LATEST_SCHEMA_VERSION => Err(Error::database(
             "database schema is old; run aglink db migrate",
-        )),
+        )
+        .at_path(path)),
         v if v > LATEST_SCHEMA_VERSION => {
-            Err(path_error(path, "database schema is newer; upgrade aglink"))
+            Err(Error::database("database schema is newer; upgrade aglink").at_path(path))
         }
         _ => Ok(()),
     }
@@ -254,7 +254,7 @@ pub fn backup_database(
     );
     let destination_text = backup_path
         .to_str()
-        .ok_or_else(|| path_error(&backup_path, "backup path is not UTF-8"))?;
+        .ok_or_else(|| Error::invalid_arguments("backup path is not UTF-8").at_path(&backup_path))?;
 
     if path_metadata(&backup_path)?.is_some() {
         return Err(Error::project(format!(
@@ -305,10 +305,10 @@ fn path_metadata(path: &Path) -> Result<Option<fs::Metadata>> {
 
 fn open_existing_connection(path: &Path, flags: OpenFlags) -> Result<Connection> {
     if path_metadata(path)?.is_none() {
-        return Err(path_error(
-            path,
+        return Err(Error::database(
             "database missing; run aglink db migrate to initialize",
-        ));
+        )
+        .at_path(path));
     }
     Connection::open_with_flags(path, flags).map_err(|error| path_error(path, error))
 }

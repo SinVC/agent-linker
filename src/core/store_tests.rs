@@ -207,3 +207,37 @@ fn store_connections_enforce_readonly_and_foreign_key_pragmas() {
         )
         .is_err());
 }
+
+#[test]
+fn backup_database_rejects_non_utf8_path_with_explicit_error_and_path() {
+    let temp = TestDir::new("backup-non-utf8");
+    let resolution = DbPathResolution {
+        path: temp.path().join("source.db"),
+        reason: DbPathReason::ExplicitDataDirEnv,
+    };
+    rusqlite::Connection::open(&resolution.path).unwrap();
+
+    #[cfg(windows)]
+    let bad_path = {
+        use std::os::windows::ffi::OsStringExt;
+        let wide = [b'b' as u16, 0xD800, b'k' as u16];
+        std::path::PathBuf::from(std::ffi::OsString::from_wide(&wide))
+    };
+    #[cfg(unix)]
+    let bad_path = {
+        use std::os::unix::ffi::OsStrExt;
+        std::path::PathBuf::from(std::ffi::OsStr::from_bytes(b"\xFF\xFE"))
+    };
+
+    let err = backup_database(&resolution, Some(&bad_path)).unwrap_err();
+    assert!(
+        matches!(err, crate::core::Error::InvalidArguments { .. }),
+        "expected InvalidArguments, got {err:?}"
+    );
+    assert_eq!(err.path(), Some(bad_path.as_path()));
+    let msg = err.to_string();
+    assert!(
+        msg.contains("backup path is not UTF-8"),
+        "missing message: {msg}"
+    );
+}
