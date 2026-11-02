@@ -2,29 +2,43 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, Output},
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+static PROJECT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 struct Project(PathBuf, Vec<u8>);
 
 impl Project {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "aglink-discovery-cli-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(path.join(".agents")).unwrap();
-        agent_linker::core::manifest::save_manifest(
-            &path,
-            &agent_linker::core::manifest::Manifest::empty(),
-        )
-        .unwrap();
-        let original = fs::read(path.join(".agents/links.toml")).unwrap();
-        Self(path, original)
+        for _ in 0..20 {
+            let counter = PROJECT_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "aglink-discovery-cli-{}-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
+                counter
+            ));
+            match fs::create_dir(&path) {
+                Ok(()) => {
+                    fs::create_dir_all(path.join(".agents")).unwrap();
+                    agent_linker::core::manifest::save_manifest(
+                        &path,
+                        &agent_linker::core::manifest::Manifest::empty(),
+                    )
+                    .unwrap();
+                    let original = fs::read(path.join(".agents/links.toml")).unwrap();
+                    return Self(path, original);
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => panic!("failed to create project discovery directory {}: {err}", path.display()),
+            }
+        }
+        panic!("failed to create exclusive project discovery directory after multiple attempts");
     }
 
     fn run(&self, cwd: &Path, args: &[&str]) -> Output {
@@ -126,4 +140,24 @@ fn init_stays_in_the_actual_working_directory() {
         fs::read_to_string(child.join("CLAUDE.md")).unwrap(),
         "user content"
     );
+}
+
+#[test]
+fn project_fixture_concurrent_creation_and_isolation() {
+    use std::thread;
+
+    let mut handles = Vec::new();
+    for _ in 0..6 {
+        handles.push(thread::spawn(|| {
+            let project = Project::new();
+            assert!(project.0.is_dir());
+            assert!(project.0.join(".agents/links.toml").is_file());
+            let out = project.run(&project.0, &["status"]);
+            assert!(out.status.success());
+        }));
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
 }

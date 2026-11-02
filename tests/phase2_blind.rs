@@ -4,8 +4,11 @@ use std::{
     fs,
     path::PathBuf,
     process::{Command, Output},
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+static PHASE2_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 struct Fixture {
     root: PathBuf,
@@ -13,19 +16,29 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "aglink-phase2-blind-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&root).unwrap();
-        Self {
-            data: root.join("not-created/data"),
-            root,
+        for _ in 0..20 {
+            let counter = PHASE2_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!(
+                "aglink-phase2-blind-{}-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
+                counter
+            ));
+            match fs::create_dir(&root) {
+                Ok(()) => {
+                    return Self {
+                        data: root.join("not-created/data"),
+                        root,
+                    };
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => panic!("failed to create phase 2 test directory {}: {err}", root.display()),
+            }
         }
+        panic!("failed to create exclusive phase 2 test directory after multiple attempts");
     }
     fn db(&self) -> PathBuf {
         self.data.join("agent-linker.db")

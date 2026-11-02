@@ -8,22 +8,33 @@ use agent_linker::core::{
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+static MAPPING_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "aglink-mapping-case-blind-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir(&root).unwrap();
-        Self(root)
+        for _ in 0..20 {
+            let counter = MAPPING_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!(
+                "aglink-mapping-case-blind-{}-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
+                counter
+            ));
+            match fs::create_dir(&root) {
+                Ok(()) => return Self(root),
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => panic!("failed to create mapping case test directory {}: {err}", root.display()),
+            }
+        }
+        panic!("failed to create exclusive mapping case test directory after multiple attempts");
     }
     fn conn(&self) -> rusqlite::Connection {
         rusqlite::Connection::open(self.0.join("data/agent-linker.db")).unwrap()
