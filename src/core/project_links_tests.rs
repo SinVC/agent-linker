@@ -1,10 +1,5 @@
-use super::{
-    clean_project_with_provider, doctor_project, link_group_project_with_provider_and_db,
-    link_project_with_provider_and_db, link_project_with_provider_and_db_with_options,
-    status_project_with_provider, unlink_group_project_with_provider_and_db,
-    unlink_project_with_provider, unlink_project_with_provider_with_options, CleanMode,
-    LinkItemRequest, LinkOptions, UnlinkOptions,
-};
+use super::{CleanMode, CleanOptions, LinkItemRequest, LinkOptions, ProjectCtx, UnlinkOptions};
+
 use crate::core::{
     linkable::LinkableItemType,
     manifest::{load_manifest, save_manifest, LinkOrigin},
@@ -26,6 +21,117 @@ fn database(temp_dir: &TestDir) -> DbPathResolution {
     };
     Store::migrate(&resolution).unwrap();
     resolution
+}
+
+// Compatibility helpers are confined to tests; every operation enters via ProjectCtx.
+fn link_project_with_provider_and_db(
+    root: &Path,
+    provider: &mut MockSymlinkProvider,
+    db: &DbPathResolution,
+    request: LinkItemRequest,
+) -> Result<super::LinkItemReport, crate::core::error::Error> {
+    link_project_with_provider_and_db_with_options(
+        root,
+        provider,
+        db,
+        request,
+        LinkOptions::default(),
+    )
+}
+fn link_project_with_provider_and_db_with_options(
+    root: &Path,
+    provider: &mut MockSymlinkProvider,
+    db: &DbPathResolution,
+    request: LinkItemRequest,
+    options: LinkOptions,
+) -> Result<super::LinkItemReport, crate::core::error::Error> {
+    let store = Store::open_ro(db)?;
+    super::link_item(
+        &mut ProjectCtx { root, provider },
+        &store,
+        &request,
+        options,
+    )
+}
+fn link_group_project_with_provider_and_db(
+    root: &Path,
+    provider: &mut MockSymlinkProvider,
+    db: &DbPathResolution,
+    group: &str,
+) -> Result<super::LinkGroupReport, crate::core::error::Error> {
+    link_group_project_with_provider_and_db_with_options(
+        root,
+        provider,
+        db,
+        group,
+        LinkOptions::default(),
+    )
+}
+fn link_group_project_with_provider_and_db_with_options(
+    root: &Path,
+    provider: &mut MockSymlinkProvider,
+    db: &DbPathResolution,
+    group: &str,
+    options: LinkOptions,
+) -> Result<super::LinkGroupReport, crate::core::error::Error> {
+    let store = Store::open_ro(db)?;
+    super::link_group(&mut ProjectCtx { root, provider }, &store, group, options)
+}
+fn status_project_with_provider(
+    root: &Path,
+    provider: &mut MockSymlinkProvider,
+) -> Result<super::StatusReport, crate::core::error::Error> {
+    super::status(&mut ProjectCtx { root, provider })
+}
+fn unlink_project_with_provider(
+    root: &Path,
+    provider: &mut MockSymlinkProvider,
+    identifier: Option<String>,
+) -> Result<super::UnlinkReport, crate::core::error::Error> {
+    unlink_project_with_provider_with_options(root, provider, identifier, UnlinkOptions::default())
+}
+fn unlink_project_with_provider_with_options(
+    root: &Path,
+    provider: &mut MockSymlinkProvider,
+    identifier: Option<String>,
+    options: UnlinkOptions,
+) -> Result<super::UnlinkReport, crate::core::error::Error> {
+    super::unlink(
+        &mut ProjectCtx { root, provider },
+        identifier.as_deref(),
+        options,
+    )
+}
+fn unlink_group_project_with_provider_and_db(
+    root: &Path,
+    provider: &mut MockSymlinkProvider,
+    db: &DbPathResolution,
+    group: &str,
+) -> Result<super::UnlinkReport, crate::core::error::Error> {
+    unlink_group_project_with_provider_and_db_with_options(
+        root,
+        provider,
+        db,
+        group,
+        UnlinkOptions::default(),
+    )
+}
+fn unlink_group_project_with_provider_and_db_with_options(
+    root: &Path,
+    provider: &mut MockSymlinkProvider,
+    db: &DbPathResolution,
+    group: &str,
+    options: UnlinkOptions,
+) -> Result<super::UnlinkReport, crate::core::error::Error> {
+    let store = Store::open_ro(db)?;
+    super::unlink_group(&mut ProjectCtx { root, provider }, &store, group, options)
+}
+fn clean_project_with_provider(
+    root: &Path,
+    provider: &mut MockSymlinkProvider,
+    mode: CleanMode,
+) -> Result<super::CleanReport, crate::core::error::Error> {
+    super::clean(&mut ProjectCtx { root, provider }, CleanOptions::new(mode))
 }
 
 #[test]
@@ -97,7 +203,7 @@ fn symlink_parent_escape_is_rejected_by_every_project_operation() {
             "save: {hijacked}"
         );
         assert!(
-            status_project_with_provider(project.path(), &provider).is_err(),
+            status_project_with_provider(project.path(), &mut provider).is_err(),
             "status: {hijacked}"
         );
         assert!(
@@ -227,7 +333,7 @@ fn link_status_and_unlink_round_trip_for_skill() {
     );
     assert_eq!(load_manifest(temp_dir.path()).unwrap().links.len(), 1);
 
-    let status = status_project_with_provider(temp_dir.path(), &provider).unwrap();
+    let status = status_project_with_provider(temp_dir.path(), &mut provider).unwrap();
     assert!(matches!(
         status.entries[0].status,
         LinkStatus::CorrectSymlink { .. }
@@ -475,7 +581,7 @@ fn group_link_and_unlink_reuse_project_link_flow() {
 
     let writer = rusqlite::Connection::open(&resolution.path).unwrap();
     writer.execute_batch("BEGIN IMMEDIATE;").unwrap();
-    let preview = super::link_group_project_with_provider_and_db_with_options(
+    let preview = link_group_project_with_provider_and_db_with_options(
         temp_dir.path(),
         &mut provider,
         &resolution,
@@ -497,7 +603,7 @@ fn group_link_and_unlink_reuse_project_link_flow() {
     assert_eq!(link_report.reports.len(), 2);
     assert_eq!(load_manifest(temp_dir.path()).unwrap().links.len(), 2);
 
-    let preview = super::unlink_group_project_with_provider_and_db_with_options(
+    let preview = unlink_group_project_with_provider_and_db_with_options(
         temp_dir.path(),
         &mut provider,
         &resolution,
@@ -750,47 +856,9 @@ fn clean_missing_source_removes_managed_link_even_if_link_is_not_broken() {
     assert!(load_manifest(temp_dir.path()).unwrap().links.is_empty());
 }
 
-#[test]
-fn doctor_reports_database_manifest_harness_and_backend() {
-    let temp_dir = TestDir::new("doctor");
-    fs::create_dir(temp_dir.path().join(".agents")).unwrap();
-    save_empty_manifest(temp_dir.path());
-    let resolution = database(&temp_dir);
-
-    let report = doctor_project(temp_dir.path(), &resolution, true);
-
-    assert!(report.ok);
-    assert!(report.checks.iter().any(|check| check.name == "database"));
-    assert!(report.checks.iter().any(|check| check.name == "manifest"));
-    assert!(report
-        .checks
-        .iter()
-        .any(|check| check.name == "harness-adapter"));
-    assert!(report
-        .checks
-        .iter()
-        .any(|check| check.name == "symlink-backend"));
-}
-
 fn save_empty_manifest(project_root: &Path) {
     crate::core::manifest::save_manifest(project_root, &crate::core::manifest::Manifest::empty())
         .unwrap();
-}
-
-#[test]
-fn doctor_accepts_valid_database_with_no_harness_rows() {
-    let project = TestDir::new("doctor-empty-harnesses");
-    fs::create_dir(project.path().join(".agents")).unwrap();
-    save_empty_manifest(project.path());
-    let resolution = database(&project);
-    let c = rusqlite::Connection::open(&resolution.path).unwrap();
-    c.execute("DELETE FROM harnesses", []).unwrap();
-    drop(c);
-    let report = doctor_project(project.path(), &resolution, true);
-    assert!(
-        report.ok,
-        "valid empty harness registry must remain healthy"
-    );
 }
 
 #[test]

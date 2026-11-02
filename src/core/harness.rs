@@ -162,7 +162,7 @@ impl Store {
                 params![identifier, enabled, timestamp()],
             )?;
             if changed == 0 {
-                return Err(Error::database(format!("unknown harness '{identifier}'")));
+                return Err(Error::NotFound(format!("unknown harness '{identifier}'")));
             }
             Ok(())
         })
@@ -172,13 +172,6 @@ impl Store {
     }
     pub fn list_mappings_for_harness(&self, identifier: &str) -> Result<Vec<StoredHarnessMapping>> {
         Ok(self.show_harness(identifier)?.mappings)
-    }
-    pub fn enabled_harness_mappings(&self) -> Result<Vec<StoredHarnessMapping>> {
-        let mut statement=self.connection().prepare("SELECT m.id,m.harness_id,m.source_path,m.link_path,m.link_kind,m.required,m.created_at,m.updated_at FROM harness_mappings m JOIN harnesses h ON h.id=m.harness_id WHERE h.enabled=1 ORDER BY h.name,m.id")?;
-        let rows = statement
-            .query_map([], stored_mapping_from_row)?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
     }
     pub fn add_mapping(&self, request: AddHarnessMapping) -> Result<StoredHarnessMapping> {
         self.write(|connection| {
@@ -221,7 +214,7 @@ impl Store {
                         .find(|mapping| mapping_path_key(&mapping.link_path) == key)
                 })
                 .ok_or_else(|| {
-                    Error::database(format!(
+                    Error::NotFound(format!(
                         "harness `{harness_id}` has no mapping for `{}`",
                         link_path.display()
                     ))
@@ -253,7 +246,7 @@ fn show_harness_with_connection(
     connection: &Connection,
     identifier: &str,
 ) -> Result<StoredHarness> {
-    let mut harness=connection.query_row("SELECT id,name,display_name,built_in,enabled,created_at,updated_at FROM harnesses WHERE id=?1 OR name=?1",[identifier],harness_from_row).optional()?.ok_or_else(||Error::database(format!("unknown harness '{identifier}'")))?;
+    let mut harness=connection.query_row("SELECT id,name,display_name,built_in,enabled,created_at,updated_at FROM harnesses WHERE id=?1 OR name=?1",[identifier],harness_from_row).optional()?.ok_or_else(||Error::NotFound(format!("unknown harness '{identifier}'")))?;
     harness.mappings = list_harness_mappings(connection, Some(&harness.id))?;
     Ok(harness)
 }
@@ -330,7 +323,7 @@ fn find_harness_id(connection: &rusqlite::Connection, harness: &str) -> Result<S
             |row| row.get(0),
         )
         .optional()?
-        .ok_or_else(|| Error::database(format!("unknown harness `{harness}`")))
+        .ok_or_else(|| Error::NotFound(format!("unknown harness `{harness}`")))
 }
 
 fn find_mapping_by_id(connection: &rusqlite::Connection, id: &str) -> Result<StoredHarnessMapping> {

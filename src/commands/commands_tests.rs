@@ -15,31 +15,9 @@ fn default_item_name_uses_path_stem() {
 
 #[test]
 fn doctor_report_controls_success_status() {
-    let report = CommandReport::Doctor(crate::core::project_links::DoctorReport {
+    let report = CommandReport::Doctor(crate::core::doctor::DoctorReport {
         checks: Vec::new(),
         ok: false,
     });
     assert!(!report.is_success());
-}
-
-#[test]
-fn command_layer_does_not_use_forbidden_low_level_apis() {
-    let source = include_str!("mod.rs");
-    for forbidden in [
-        concat!("rusq", "lite"),
-        concat!("std::", "fs"),
-        concat!("std::", "os::"),
-        concat!(".agents/", "links.toml"),
-        concat!("load_", "manifest"),
-        concat!("save_", "manifest"),
-        concat!("ensure_", "symlink"),
-        concat!("symlink_", "file"),
-        concat!("symlink_", "dir"),
-        concat!("read_", "link("),
-    ] {
-        assert!(
-            !source.contains(forbidden),
-            "commands layer must not contain `{forbidden}`"
-        );
-    }
 }

@@ -7,13 +7,10 @@ use agent_linker::core::{
         save_manifest, LinkOrigin, LinkRecord, Manifest,
     },
     paths::{normalize_windows_path, DbPathReason, DbPathResolution},
-    project_links::{
-        link_project_with_provider_and_db_with_options, unlink_group_project_with_provider_and_db,
-        unlink_project_with_provider, LinkItemRequest, LinkOptions,
-    },
+    project_links::{self, LinkItemRequest, LinkOptions, ProjectCtx, UnlinkOptions},
     registry::AddLinkableItem,
     store::Store,
-    symlink::{LinkKind, MockSymlinkProvider, SymlinkBackend, SymlinkProvider},
+    symlink::{LinkKind, SymlinkProvider},
 };
 use std::{
     fs,
@@ -22,9 +19,14 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[path = "support/mock.rs"]
+mod mock;
+use mock::MockSymlinkProvider;
+
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let root = std::env::temp_dir().join(format!(
             "aglink-phase12-blind-{}-{}",
             std::process::id(),
@@ -32,6 +34,11 @@ impl Fixture {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
+        ));
+        let root = root.with_file_name(format!(
+            "{}-{}",
+            root.file_name().unwrap().to_string_lossy(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         fs::create_dir(&root).unwrap();
         Self(root)
@@ -110,6 +117,48 @@ fn output_text(output: &Output) -> String {
     )
 }
 
+// Only tests retain adapters for the historical call shape.
+fn link_project_with_provider_and_db_with_options(
+    root: &Path,
+    provider: &mut MockSymlinkProvider,
+    db: &DbPathResolution,
+    request: LinkItemRequest,
+    options: LinkOptions,
+) -> Result<project_links::LinkItemReport, agent_linker::core::error::Error> {
+    let store = Store::open_ro(db)?;
+    project_links::link_item(
+        &mut ProjectCtx { root, provider },
+        &store,
+        &request,
+        options,
+    )
+}
+fn unlink_group_project_with_provider_and_db(
+    root: &Path,
+    provider: &mut MockSymlinkProvider,
+    db: &DbPathResolution,
+    group: &str,
+) -> Result<project_links::UnlinkReport, agent_linker::core::error::Error> {
+    let store = Store::open_ro(db)?;
+    project_links::unlink_group(
+        &mut ProjectCtx { root, provider },
+        &store,
+        group,
+        UnlinkOptions::default(),
+    )
+}
+fn unlink_project_with_provider(
+    root: &Path,
+    provider: &mut MockSymlinkProvider,
+    identifier: Option<String>,
+) -> Result<project_links::UnlinkReport, agent_linker::core::error::Error> {
+    project_links::unlink(
+        &mut ProjectCtx { root, provider },
+        identifier.as_deref(),
+        UnlinkOptions::default(),
+    )
+}
+
 #[test]
 fn mapping_normalizes_only_destination_and_initializes_dot_prefixed_paths() {
     let f = Fixture::new();
@@ -160,10 +209,10 @@ fn mapping_normalizes_only_destination_and_initializes_dot_prefixed_paths() {
         .is_err());
 }
 
-fn insert_old_mapping(store: &Store, id: &str, path: &str) {
+fn insert_old_mapping(store: &Store, db: &rusqlite::Connection, id: &str, path: &str) {
     let harness = store.show_harness("claude").unwrap();
     let harness_id = &harness.mappings[0].harness_id;
-    store.connection().execute("INSERT INTO harness_mappings (id,harness_id,source_path,link_path,link_kind,required,created_at,updated_at) VALUES (?1,?2,'AGENTS.md',?3,'file',0,17,19)",rusqlite::params![id,harness_id,path]).unwrap();
+    db.execute("INSERT INTO harness_mappings (id,harness_id,source_path,link_path,link_kind,required,created_at,updated_at) VALUES (?1,?2,'AGENTS.md',?3,'file',0,17,19)",rusqlite::params![id,harness_id,path]).unwrap();
 }
 
 #[test]
@@ -171,7 +220,12 @@ fn legacy_mapping_equivalence_rejects_add_and_remove_accepts_both_spellings() {
     for spelling in ["./OLD.md", "OLD.md"] {
         let f = Fixture::new();
         let store = f.store();
-        insert_old_mapping(&store, "old", "./OLD.md");
+        insert_old_mapping(
+            &store,
+            &rusqlite::Connection::open(f.resolution().path).unwrap(),
+            "old",
+            "./OLD.md",
+        );
         assert!(store
             .add_mapping(AddHarnessMapping {
                 harness: "claude".into(),
@@ -197,8 +251,18 @@ fn legacy_mapping_equivalence_rejects_add_and_remove_accepts_both_spellings() {
 fn historical_mapping_duplicates_remain_distinct_and_literal_removal_wins() {
     let f = Fixture::new();
     let store = f.store();
-    insert_old_mapping(&store, "legacy-dot", "./DUP.md");
-    insert_old_mapping(&store, "legacy-plain", "DUP.md");
+    insert_old_mapping(
+        &store,
+        &rusqlite::Connection::open(f.resolution().path).unwrap(),
+        "legacy-dot",
+        "./DUP.md",
+    );
+    insert_old_mapping(
+        &store,
+        &rusqlite::Connection::open(f.resolution().path).unwrap(),
+        "legacy-plain",
+        "DUP.md",
+    );
     let count = || {
         store
             .show_harness("claude")
@@ -225,8 +289,18 @@ fn historical_mapping_duplicates_remain_distinct_and_literal_removal_wins() {
         "legacy-dot"
     );
     assert_eq!(count(), 0);
-    insert_old_mapping(&store, "again-dot", "./DUP.md");
-    insert_old_mapping(&store, "again-plain", "DUP.md");
+    insert_old_mapping(
+        &store,
+        &rusqlite::Connection::open(f.resolution().path).unwrap(),
+        "again-dot",
+        "./DUP.md",
+    );
+    insert_old_mapping(
+        &store,
+        &rusqlite::Connection::open(f.resolution().path).unwrap(),
+        "again-plain",
+        "DUP.md",
+    );
     assert_eq!(
         store
             .remove_mapping("claude", Path::new("./DUP.md"))
@@ -323,7 +397,7 @@ fn new_manifest_roundtrip_replaces_existing_file_and_retains_epoch_integers() {
         source_path: f.0.join("source"),
         link_path: "docs/alias".into(),
         link_kind: LinkKind::File,
-        provider_backend: SymlinkBackend::Mock,
+        provider_backend: "mock".into(),
         created_by_command: "link".into(),
         created_at: 1_234_567,
         updated_at: 2_345_678,

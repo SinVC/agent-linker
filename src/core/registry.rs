@@ -233,7 +233,7 @@ fn find_item_with_connection(
 ) -> Result<LinkableItem> {
     lookup_item(connection, identifier)?
         .filter(|item| item.item_type == item_type)
-        .ok_or_else(|| Error::database(format!("unknown {} '{identifier}'", item_type.as_str())))
+        .ok_or_else(|| Error::NotFound(format!("unknown {} '{identifier}'", item_type.as_str())))
 }
 
 fn find_any_item_with_connection(
@@ -241,7 +241,7 @@ fn find_any_item_with_connection(
     identifier: &str,
 ) -> Result<LinkableItem> {
     lookup_item(connection, identifier)?
-        .ok_or_else(|| Error::database(format!("unknown linkable item '{identifier}'")))
+        .ok_or_else(|| Error::NotFound(format!("unknown linkable item '{identifier}'")))
 }
 
 fn lookup_item(connection: &Connection, identifier: &str) -> Result<Option<LinkableItem>> {
@@ -306,7 +306,7 @@ fn find_group_with_connection(connection: &Connection, identifier: &str) -> Resu
             group_from_row,
         )
         .optional()?
-        .ok_or_else(|| Error::database(format!("unknown group `{identifier}`")))?;
+        .ok_or_else(|| Error::NotFound(format!("unknown group `{identifier}`")))?;
 
     group.items = group_items_with_connection(connection, &group.id)?;
     Ok(group)

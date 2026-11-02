@@ -1,24 +1,25 @@
 //! Project `.agents/links.toml` manifest entry point.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     fs,
     io::Write,
     path::{Path, PathBuf},
-    str::FromStr,
 };
+
+use serde::{Deserialize, Serialize};
 
 use crate::core::{
     error::{Error, Result},
     harness::{default_init_mappings, HarnessMapping},
     paths::{
-        managed_relative_path_key, resolve_database_path, resolve_managed_project_path,
-        validate_managed_relative_path, DbPathResolution,
+        managed_relative_path_key, resolve_managed_project_path, validate_managed_relative_path,
+        DbPathResolution,
     },
     store::Store,
     symlink::{
-        default_provider, ensure_symlink, CreateSymlinkOptions, CreateSymlinkOutcome, LinkKind,
-        SymlinkBackend, SymlinkProvider,
+        ensure_symlink, CreateSymlinkOptions, CreateSymlinkOutcome, LinkKind, SymlinkBackend,
+        SymlinkProvider,
     },
     util::timestamp,
 };
@@ -29,41 +30,39 @@ const MANAGED_GITIGNORE_BEGIN: &str = "# BEGIN aglink managed";
 const MANAGED_GITIGNORE_END: &str = "# END aglink managed";
 const MANAGED_GITIGNORE_PATTERNS: &[&str] = &[".claude/", ".agents/"];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum LinkOrigin {
     Harness,
     Item,
 }
 
-impl LinkOrigin {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Harness => "harness",
-            Self::Item => "item",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "StoredLinkRecord")]
 pub struct LinkRecord {
     pub id: String,
     pub origin: LinkOrigin,
     /// Present only for Harness links; serialized as `framework_name` in schema 1.
+    #[serde(rename = "framework_name", skip_serializing_if = "Option::is_none")]
     pub harness_name: Option<String>,
     pub item_id: String,
     pub item_name: String,
+    #[serde(serialize_with = "serialize_path")]
     pub source_path: PathBuf,
+    #[serde(serialize_with = "serialize_path")]
     pub link_path: PathBuf,
     pub link_kind: LinkKind,
-    pub provider_backend: SymlinkBackend,
+    pub provider_backend: String,
     pub created_by_command: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub schema_version: u32,
+    #[serde(default)]
     pub links: Vec<LinkRecord>,
 }
 
@@ -159,19 +158,6 @@ pub struct InitLinkOutcome {
     pub outcome: CreateSymlinkOutcome,
 }
 
-pub fn init_current_project() -> Result<InitProjectReport> {
-    let project_root = std::env::current_dir()?;
-    let mut provider = default_provider();
-    init_project_with_provider(&project_root, provider.as_mut())
-}
-
-pub fn init_project_with_provider(
-    project_root: &Path,
-    provider: &mut dyn SymlinkProvider,
-) -> Result<InitProjectReport> {
-    init_project_with_store(project_root, provider, &resolve_database_path()?)
-}
-
 pub fn init_project_with_store(
     project_root: &Path,
     provider: &mut dyn SymlinkProvider,
@@ -179,7 +165,7 @@ pub fn init_project_with_store(
 ) -> Result<InitProjectReport> {
     let mappings = match fs::metadata(&resolution.path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => default_init_mappings(),
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(Error::io(&resolution.path, error)),
         Ok(_) => Store::open_ro(resolution)?
             .list_harnesses()?
             .into_iter()
@@ -230,7 +216,7 @@ pub fn init_project_with_mappings(
             &source,
             &link,
             mapping.link_kind,
-            CreateSymlinkOptions::new(),
+            CreateSymlinkOptions { force: false },
         )?;
 
         report.link_outcomes.push(InitLinkOutcome {
@@ -260,17 +246,15 @@ pub fn load_manifest(project_root: &Path) -> Result<Manifest> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(Manifest::empty());
         }
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(Error::io(&path, error)),
     };
 
     if !metadata.is_file() || metadata.file_type().is_symlink() {
-        return Err(Error::manifest(format!(
-            "manifest path must be a real file: {}",
-            path.display()
-        )));
+        return Err(Error::manifest("manifest path must be a real file").at_path(&path));
     }
 
-    let manifest = parse_manifest(&fs::read_to_string(&path)?)?;
+    let content = fs::read_to_string(&path).map_err(|error| Error::io(&path, error))?;
+    let manifest = parse_manifest(&content).map_err(|error| error.at_path(&path))?;
     validate_project_paths(project_root, &manifest)?;
     Ok(manifest)
 }
@@ -290,7 +274,9 @@ fn save_manifest_with_io(
     write: impl FnOnce(&mut fs::File, &[u8]) -> std::io::Result<()>,
     rename: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
 ) -> Result<()> {
-    manifest.validate()?;
+    manifest
+        .validate()
+        .map_err(|error| error.at_path(manifest_path(project_root)))?;
     validate_project_paths(project_root, manifest)?;
 
     let path = resolve_managed_project_path(project_root, Path::new(MANIFEST_PATH))?;
@@ -301,32 +287,30 @@ fn save_manifest_with_io(
     // The manifest leaf must never redirect a write through a symlink.
     match fs::symlink_metadata(&path) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-            return Err(Error::manifest(format!(
-                "manifest path must be a real file: {}",
-                path.display()
-            )));
+            return Err(Error::manifest("manifest path must be a real file").at_path(&path));
         }
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(Error::io(&path, error)),
     }
     let temporary = resolve_managed_project_path(
         project_root,
         &PathBuf::from(".agents").join(format!(".links.toml.tmp.{}", std::process::id())),
     )?;
-    fs::create_dir_all(parent)?;
+    fs::create_dir_all(parent).map_err(|error| Error::io(parent, error))?;
     // Never follow or overwrite an existing temporary leaf, including symlinks.
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(&temporary)?;
+        .open(&temporary)
+        .map_err(|error| Error::io(&temporary, error))?;
     let written = write(&mut file, serialize_manifest(manifest).as_bytes());
     drop(file);
     let result = written.and_then(|_| rename(&temporary, &path));
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
     }
-    result?;
+    result.map_err(|error| Error::io(&path, error))?;
     Ok(())
 }
 
@@ -389,13 +373,13 @@ fn ensure_real_file(
         ))),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)?;
+                fs::create_dir_all(parent).map_err(|error| Error::io(parent, error))?;
             }
-            fs::write(&path, "")?;
+            fs::write(&path, "").map_err(|error| Error::io(&path, error))?;
             report.created_paths.push(relative_path.to_path_buf());
             Ok(())
         }
-        Err(error) => Err(error.into()),
+        Err(error) => Err(Error::io(&path, error)),
     }
 }
 
@@ -423,11 +407,11 @@ fn ensure_real_dir(
             relative_path.display()
         ))),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            fs::create_dir_all(&path)?;
+            fs::create_dir_all(&path).map_err(|error| Error::io(&path, error))?;
             report.created_paths.push(relative_path.to_path_buf());
             Ok(())
         }
-        Err(error) => Err(error.into()),
+        Err(error) => Err(Error::io(&path, error)),
     }
 }
 
@@ -443,17 +427,17 @@ fn update_gitignore(project_root: &Path, report: &mut InitProjectReport) -> Resu
         }
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            fs::write(&path, block)?;
+            fs::write(&path, block).map_err(|error| Error::io(&path, error))?;
             report.created_paths.push(PathBuf::from(".gitignore"));
             return Ok(());
         }
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(Error::io(&path, error)),
     }
 
-    let original = fs::read_to_string(&path)?;
+    let original = fs::read_to_string(&path).map_err(|error| Error::io(&path, error))?;
     let updated = replace_or_append_managed_block(&original, &block)?;
     if updated != original {
-        fs::write(&path, updated)?;
+        fs::write(&path, updated).map_err(|error| Error::io(&path, error))?;
     }
     report.preserved_paths.push(PathBuf::from(".gitignore"));
     Ok(())
@@ -514,7 +498,7 @@ fn record_from_mapping(mapping: &HarnessMapping, backend: SymlinkBackend) -> Lin
         source_path: mapping.source_path.clone(),
         link_path: mapping.link_path.clone(),
         link_kind: mapping.link_kind,
-        provider_backend: backend,
+        provider_backend: backend.to_string(),
         created_by_command: "init".to_string(),
         created_at: now.clone(),
         updated_at: now,
@@ -522,210 +506,92 @@ fn record_from_mapping(mapping: &HarnessMapping, backend: SymlinkBackend) -> Lin
 }
 
 fn serialize_manifest(manifest: &Manifest) -> String {
-    let mut output = format!("schema_version = {}\n", manifest.schema_version);
-
-    for link in &manifest.links {
-        output.push('\n');
-        output.push_str("[[links]]\n");
-        push_kv(&mut output, "id", &link.id);
-        push_kv(&mut output, "origin", link.origin.as_str());
-        if let Some(name) = &link.harness_name {
-            push_kv(&mut output, "framework_name", name);
-        }
-        push_kv(&mut output, "item_id", &link.item_id);
-        push_kv(&mut output, "item_name", &link.item_name);
-        push_kv(
-            &mut output,
-            "source_path",
-            &path_to_manifest(&link.source_path),
-        );
-        push_kv(&mut output, "link_path", &path_to_manifest(&link.link_path));
-        push_kv(&mut output, "link_kind", &link.link_kind.to_string());
-        push_kv(
-            &mut output,
-            "provider_backend",
-            &link.provider_backend.to_string(),
-        );
-        push_kv(&mut output, "created_by_command", &link.created_by_command);
-        output.push_str(&format!("created_at = {}\n", link.created_at));
-        output.push_str(&format!("updated_at = {}\n", link.updated_at));
-    }
-
-    output
-}
-
-fn push_kv(output: &mut String, key: &str, value: &str) {
-    output.push_str(key);
-    output.push_str(" = \"");
-    output.push_str(&escape_manifest_string(value));
-    output.push_str("\"\n");
+    toml::to_string_pretty(manifest).expect("manifest contains only TOML-compatible fields")
 }
 
 fn parse_manifest(input: &str) -> Result<Manifest> {
-    let mut schema_version = None;
-    let mut links = Vec::new();
-    let mut current = None;
-
-    for (index, raw_line) in input.lines().enumerate() {
-        let line_number = index + 1;
-        let line = raw_line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-
-        if line == "[[links]]" {
-            if let Some(table) = current.take() {
-                links.push(link_from_table(table)?);
-            }
-            current = Some(BTreeMap::new());
-            continue;
-        }
-
-        let (key, value) = parse_key_value(line, line_number)?;
-        if key == "schema_version" && current.is_none() {
-            if schema_version.is_some() {
-                return Err(Error::manifest("manifest schema_version is duplicated"));
-            }
-            schema_version = Some(value.parse::<u32>().map_err(|_| {
-                Error::manifest(format!("invalid schema_version on line {line_number}"))
-            })?);
-            continue;
-        }
-
-        let Some(table) = current.as_mut() else {
-            return Err(Error::manifest(format!(
-                "manifest key `{key}` appears outside [[links]] on line {line_number}"
-            )));
-        };
-
-        let value =
-            if matches!(key.as_str(), "created_at" | "updated_at") && !value.starts_with('"') {
-                value
-            } else {
-                parse_string_value(&value, line_number)?
-            };
-        if table.insert(key, value).is_some() {
-            return Err(Error::manifest(format!(
-                "manifest key is duplicated on line {line_number}"
-            )));
-        }
-    }
-
-    if let Some(table) = current {
-        links.push(link_from_table(table)?);
-    }
-
-    let Some(schema_version) = schema_version else {
-        return Err(Error::manifest("manifest is missing schema_version"));
-    };
-
-    let manifest = Manifest {
-        schema_version,
-        links,
-    };
+    let manifest: Manifest = toml::from_str(input).map_err(Error::parse)?;
     manifest.validate()?;
     Ok(manifest)
 }
 
-fn parse_key_value(line: &str, line_number: usize) -> Result<(String, String)> {
-    let Some((key, value)) = line.split_once('=') else {
-        return Err(Error::manifest(format!(
-            "invalid manifest line {line_number}: expected key = value"
-        )));
-    };
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredLinkRecord {
+    id: String,
+    origin: Option<LinkOrigin>,
+    framework_name: Option<String>,
+    #[serde(rename = "scope")]
+    _scope: Option<String>,
+    item_id: String,
+    item_name: String,
+    source_path: PathBuf,
+    link_path: PathBuf,
+    link_kind: LinkKind,
+    provider_backend: String,
+    created_by_command: String,
+    #[serde(deserialize_with = "deserialize_timestamp")]
+    created_at: i64,
+    #[serde(deserialize_with = "deserialize_timestamp")]
+    updated_at: i64,
+}
 
-    let key = key.trim();
-    if key.is_empty() {
-        return Err(Error::manifest(format!(
-            "invalid manifest line {line_number}: empty key"
-        )));
+impl TryFrom<StoredLinkRecord> for LinkRecord {
+    type Error = Error;
+    fn try_from(raw: StoredLinkRecord) -> Result<Self> {
+        let mut harness_name = raw.framework_name;
+        let origin = match raw.origin {
+            Some(origin) => origin,
+            None => match harness_name.as_deref() {
+                Some("registry") => {
+                    harness_name = None;
+                    LinkOrigin::Item
+                }
+                Some(_) => LinkOrigin::Harness,
+                None => return Err(Error::manifest("manifest link is missing origin")),
+            },
+        };
+        Ok(Self {
+            id: raw.id,
+            origin,
+            harness_name,
+            item_id: raw.item_id,
+            item_name: raw.item_name,
+            source_path: raw.source_path,
+            link_path: raw.link_path,
+            link_kind: raw.link_kind,
+            provider_backend: raw.provider_backend,
+            created_by_command: raw.created_by_command,
+            created_at: raw.created_at,
+            updated_at: raw.updated_at,
+        })
     }
-
-    Ok((key.to_string(), value.trim().to_string()))
 }
 
-fn parse_string_value(value: &str, line_number: usize) -> Result<String> {
-    if !value.starts_with('"') || !value.ends_with('"') || value.len() < 2 {
-        return Err(Error::manifest(format!(
-            "invalid manifest string on line {line_number}"
-        )));
+fn deserialize_timestamp<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<i64, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Timestamp {
+        Integer(i64),
+        Legacy(String),
     }
-
-    unescape_manifest_string(&value[1..value.len() - 1], line_number)
-}
-
-fn link_from_table(mut table: BTreeMap<String, String>) -> Result<LinkRecord> {
-    let id = required_field(&mut table, "id")?;
-    // Legacy scope was always project; origin replaces the registry sentinel.
-    table.remove("scope");
-    let mut harness_name = table.remove("framework_name");
-    let origin = match table.remove("origin").as_deref() {
-        Some("harness") => LinkOrigin::Harness,
-        Some("item") => LinkOrigin::Item,
-        Some(value) => return Err(Error::manifest(format!("unknown origin `{value}`"))),
-        None => match harness_name.as_deref() {
-            Some("registry") => {
-                harness_name = None;
-                LinkOrigin::Item
-            }
-            Some(_) => LinkOrigin::Harness,
-            None => return Err(Error::manifest("manifest link is missing `origin`")),
-        },
-    };
-    let link = LinkRecord {
-        id,
-        origin,
-        harness_name,
-        item_id: required_field(&mut table, "item_id")?,
-        item_name: required_field(&mut table, "item_name")?,
-        source_path: PathBuf::from(required_field(&mut table, "source_path")?),
-        link_path: PathBuf::from(required_field(&mut table, "link_path")?),
-        link_kind: parse_link_kind(&required_field(&mut table, "link_kind")?)?,
-        provider_backend: parse_backend(&required_field(&mut table, "provider_backend")?)?,
-        created_by_command: required_field(&mut table, "created_by_command")?,
-        created_at: parse_timestamp(&required_field(&mut table, "created_at")?)?,
-        updated_at: parse_timestamp(&required_field(&mut table, "updated_at")?)?,
-    };
-
-    if let Some(extra) = table.keys().next() {
-        return Err(Error::manifest(format!(
-            "manifest link `{}` contains unknown key `{extra}`",
-            link.id
-        )));
+    match Timestamp::deserialize(deserializer)? {
+        Timestamp::Integer(value) => Ok(value),
+        Timestamp::Legacy(value) => value
+            .strip_prefix("unix:")
+            .unwrap_or(&value)
+            .parse()
+            .map_err(serde::de::Error::custom),
     }
-
-    Ok(link)
 }
 
-fn parse_timestamp(value: &str) -> Result<i64> {
-    value
-        .strip_prefix("unix:")
-        .unwrap_or(value)
-        .parse()
-        .map_err(|_| Error::manifest(format!("invalid timestamp: {value}")))
-}
-
-fn required_field(table: &mut BTreeMap<String, String>, key: &str) -> Result<String> {
-    table
-        .remove(key)
-        .ok_or_else(|| Error::manifest(format!("manifest link is missing `{key}`")))
-}
-
-fn parse_link_kind(value: &str) -> Result<LinkKind> {
-    LinkKind::from_str(value).map_err(|_| Error::manifest(format!("unknown link_kind `{value}`")))
-}
-
-fn parse_backend(value: &str) -> Result<SymlinkBackend> {
-    match value {
-        "std" => Ok(SymlinkBackend::Std),
-        "windows-broker" => Ok(SymlinkBackend::WindowsBroker),
-        "windows-std-fallback" => Ok(SymlinkBackend::WindowsStdFallback),
-        "external-ln" => Ok(SymlinkBackend::ExternalLn),
-        "mock" => Ok(SymlinkBackend::Mock),
-        other => Err(Error::manifest(format!(
-            "unknown provider_backend `{other}`"
-        ))),
-    }
+fn serialize_path<S: serde::Serializer>(
+    path: &Path,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    serializer.serialize_str(&path_to_manifest(path))
 }
 
 fn require_non_empty(field: &str, value: &str) -> Result<()> {
@@ -745,48 +611,15 @@ fn path_to_manifest(path: &Path) -> String {
     if Path::new(path.as_ref()).is_absolute() {
         path.to_string()
     } else {
-        path.replace('\\', "/")
-    }
-}
-
-fn escape_manifest_string(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-}
-
-fn unescape_manifest_string(value: &str, line_number: usize) -> Result<String> {
-    let mut output = String::new();
-    let mut chars = value.chars();
-
-    while let Some(ch) = chars.next() {
-        if ch != '\\' {
-            output.push(ch);
-            continue;
+        #[cfg(windows)]
+        {
+            path.replace('\\', "/")
         }
-
-        let Some(escaped) = chars.next() else {
-            return Err(Error::manifest(format!(
-                "invalid escape at end of line {line_number}"
-            )));
-        };
-
-        match escaped {
-            '\\' => output.push('\\'),
-            '"' => output.push('"'),
-            'n' => output.push('\n'),
-            'r' => output.push('\r'),
-            other => {
-                return Err(Error::manifest(format!(
-                    "unsupported escape `\\{other}` on line {line_number}"
-                )));
-            }
+        #[cfg(not(windows))]
+        {
+            path.to_string()
         }
     }
-
-    Ok(output)
 }
 
 #[cfg(test)]

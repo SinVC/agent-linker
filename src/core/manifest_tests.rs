@@ -156,7 +156,8 @@ fn damaged_manifest_fails_without_overwrite() {
     let mut provider = seeded_provider(temp_dir.path());
     let error = init_project_with_provider(temp_dir.path(), &mut provider).unwrap_err();
 
-    assert!(matches!(error, Error::Manifest(_)));
+    assert!(matches!(error, Error::Parse { .. }));
+    assert!(std::error::Error::source(&error).is_some());
     assert_eq!(fs::read_to_string(manifest_path).unwrap(), "not valid");
 }
 
@@ -282,7 +283,8 @@ fn gitignore_managed_block_preserves_user_content() {
 fn existing_empty_manifest_is_invalid() {
     let error = parse_manifest("").unwrap_err();
 
-    assert!(matches!(error, Error::Manifest(_)));
+    assert!(matches!(error, Error::Parse { .. }));
+    assert!(std::error::Error::source(&error).is_some());
     assert_eq!(Manifest::empty().links.len(), 0);
 }
 

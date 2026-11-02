@@ -8,10 +8,11 @@
 
 ## 代码入口
 
-- [link 多层入口](../../src/core/project_links.rs#L146)、[group link 多层入口](../../src/core/project_links.rs#L289)。
-- [status/unlink/group unlink 多层入口](../../src/core/project_links.rs#L356)、[clean 多层入口](../../src/core/project_links.rs#L485)。
-- [commands imports](../../src/commands/mod.rs#L1)、[run](../../src/commands/mod.rs#L240)、[run_group/run_link/run_unlink](../../src/commands/mod.rs#L398)。
-- [project_links 测试入口](../../src/core/project_links.rs#L1208)、[TestDir](../../src/core/test_support.rs#L8)。
+- [src/core/project_links.rs · `pub struct ProjectCtx`](../../src/core/project_links.rs#L125)。
+- [src/core/project_links.rs · `pub fn link_item`](../../src/core/project_links.rs#L308)。
+- [src/commands/mod.rs · `pub fn run`](../../src/commands/mod.rs#L195)。
+- [src/commands/mod.rs · `fn run_link`](../../src/commands/mod.rs#L390)。
+- [src/commands/mod.rs · `fn run_unlink`](../../src/commands/mod.rs#L408)。
 
 ## 修改清单
 
@@ -39,4 +40,4 @@
 
 ## 执行记录
 
-未执行。完成时填写最终核心函数与命令组装位置、删除入口和验证结果，再勾选 TODO 17。
+实现、验证结果和未解决问题统一记录于[阶段三进度 · 17](阶段三进度.md#步骤-17)。

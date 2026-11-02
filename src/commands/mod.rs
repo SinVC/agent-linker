@@ -1,22 +1,19 @@
 use std::path::{Path, PathBuf};
 
 use crate::core::{
+    doctor::{doctor_project, DoctorCheck, DoctorReport},
     error::{Error, Result},
     harness::{AddHarnessMapping, StoredHarness, StoredHarnessMapping},
     linkable::{LinkableItem, LinkableItemType},
-    manifest::{init_current_project, InitProjectReport},
+    manifest::{init_project_with_store, InitProjectReport},
     paths::{self, DbPathResolution},
     project_links::{
-        clean_current_project_with_options, doctor_current_project,
-        link_current_project_with_options, link_group_current_project_with_options,
-        status_current_project, unlink_current_project_with_options,
-        unlink_group_current_project_with_options, CleanOptions, CleanReport, DoctorReport,
-        LinkGroupReport, LinkItemReport, LinkItemRequest, LinkOptions, StatusReport, UnlinkOptions,
-        UnlinkReport,
+        self, CleanOptions, CleanReport, LinkGroupReport, LinkItemReport, LinkItemRequest,
+        LinkOptions, ProjectCtx, StatusReport, UnlinkOptions, UnlinkReport,
     },
     registry::{AddLinkableItem, Group, GroupSummary, GroupUpdateReport},
     store::{self, DbBackupReport, DbCheckReport, MigrationReport, Store},
-    symlink::LinkKind,
+    symlink::{default_provider, LinkKind},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,36 +92,13 @@ pub enum LinkableCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GroupCommand {
-    Create {
-        name: String,
-    },
+    Create { name: String },
     List,
-    Show {
-        name: String,
-    },
-    Rename {
-        old: String,
-        new: String,
-    },
-    Delete {
-        name: String,
-    },
-    Add {
-        group: String,
-        items: Vec<String>,
-    },
-    Remove {
-        group: String,
-        items: Vec<String>,
-    },
-    Link {
-        group: String,
-        options: LinkOptions,
-    },
-    Unlink {
-        group: String,
-        options: UnlinkOptions,
-    },
+    Show { name: String },
+    Rename { old: String, new: String },
+    Delete { name: String },
+    Add { group: String, items: Vec<String> },
+    Remove { group: String, items: Vec<String> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -220,7 +194,16 @@ impl CommandReport {
 
 pub fn run(command: Command) -> Result<CommandReport> {
     match command {
-        Command::Init => Ok(CommandReport::Init(init_current_project()?)),
+        Command::Init => {
+            let root = std::env::current_dir()?;
+            let mut provider = default_provider();
+            let resolution = paths::resolve_database_path()?;
+            Ok(CommandReport::Init(init_project_with_store(
+                &root,
+                provider.as_mut(),
+                &resolution,
+            )?))
+        }
         Command::Db(command) => run_db(command),
         Command::Harness(command) => run_harness(command),
         Command::Skill(command) => run_linkable(command, LinkableItemType::Skill),
@@ -229,18 +212,38 @@ pub fn run(command: Command) -> Result<CommandReport> {
         Command::Link(command) => run_link(command),
         Command::Unlink(command) => run_unlink(command),
         Command::Status(command) => {
-            let report = status_current_project()?;
+            let root = paths::current_project_root()?;
+            let mut provider = default_provider();
+            let report = project_links::status(&mut ProjectCtx {
+                root: &root,
+                provider: provider.as_mut(),
+            })?;
             Ok(CommandReport::Status {
                 report,
                 json: command.json,
             })
         }
-        Command::Clean(command) => Ok(CommandReport::Clean(clean_current_project_with_options(
-            command.options,
-        )?)),
-        Command::Doctor(command) => Ok(CommandReport::Doctor(doctor_current_project(
-            command.verbose,
-        ))),
+        Command::Clean(command) => {
+            let root = paths::current_project_root()?;
+            let mut provider = default_provider();
+            Ok(CommandReport::Clean(project_links::clean(
+                &mut ProjectCtx {
+                    root: &root,
+                    provider: provider.as_mut(),
+                },
+                command.options,
+            )?))
+        }
+        Command::Doctor(command) => {
+            let report = match paths::current_project_root() {
+                Ok(root) => match paths::resolve_database_path() {
+                    Ok(resolution) => doctor_project(&root, &resolution, command.verbose),
+                    Err(error) => failed_doctor("database-path", error),
+                },
+                Err(error) => failed_doctor("project-root", error),
+            };
+            Ok(CommandReport::Doctor(report))
+        }
     }
 }
 
@@ -356,16 +359,6 @@ fn run_linkable(command: LinkableCommand, item_type: LinkableItemType) -> Result
 
 fn run_group(command: GroupCommand) -> Result<CommandReport> {
     let resolution = paths::resolve_database_path()?;
-    if let GroupCommand::Link { group, options } = command {
-        return Ok(CommandReport::LinkGroup(
-            link_group_current_project_with_options(&group, options)?,
-        ));
-    }
-    if let GroupCommand::Unlink { group, options } = command {
-        return Ok(CommandReport::Unlink(
-            unlink_group_current_project_with_options(&group, options)?,
-        ));
-    }
     let store = match &command {
         GroupCommand::List | GroupCommand::Show { .. } => Store::open_ro(&resolution)?,
         _ => Store::open_rw(&resolution)?,
@@ -391,34 +384,55 @@ fn run_group(command: GroupCommand) -> Result<CommandReport> {
                 skipped: Vec::new(),
             }))
         }
-        GroupCommand::Link { group, options } => Ok(CommandReport::LinkGroup(
-            link_group_current_project_with_options(&group, options)?,
-        )),
-        GroupCommand::Unlink { group, options } => Ok(CommandReport::Unlink(
-            unlink_group_current_project_with_options(&group, options)?,
-        )),
     }
 }
 
 fn run_link(command: LinkCommand) -> Result<CommandReport> {
+    let root = paths::current_project_root()?;
+    let mut provider = default_provider();
+    let mut ctx = ProjectCtx {
+        root: &root,
+        provider: provider.as_mut(),
+    };
+    let store = Store::open_ro(&paths::resolve_database_path()?)?;
     match command {
         LinkCommand::Item { request, options } => Ok(CommandReport::LinkItem(
-            link_current_project_with_options(request, options)?,
+            project_links::link_item(&mut ctx, &store, &request, options)?,
         )),
         LinkCommand::Group { group, options } => Ok(CommandReport::LinkGroup(
-            link_group_current_project_with_options(&group, options)?,
+            project_links::link_group(&mut ctx, &store, &group, options)?,
         )),
     }
 }
 
 fn run_unlink(command: UnlinkCommand) -> Result<CommandReport> {
-    match command.target {
-        UnlinkTarget::Item(identifier) => Ok(CommandReport::Unlink(
-            unlink_current_project_with_options(identifier, command.options)?,
-        )),
-        UnlinkTarget::Group(group) => Ok(CommandReport::Unlink(
-            unlink_group_current_project_with_options(&group, command.options)?,
-        )),
+    let root = paths::current_project_root()?;
+    let mut provider = default_provider();
+    let mut ctx = ProjectCtx {
+        root: &root,
+        provider: provider.as_mut(),
+    };
+    let report = match command.target {
+        UnlinkTarget::Item(identifier) => {
+            project_links::unlink(&mut ctx, identifier.as_deref(), command.options)?
+        }
+        UnlinkTarget::Group(group) => {
+            let store = Store::open_ro(&paths::resolve_database_path()?)?;
+            project_links::unlink_group(&mut ctx, &store, &group, command.options)?
+        }
+    };
+    Ok(CommandReport::Unlink(report))
+}
+
+fn failed_doctor(name: &str, error: Error) -> DoctorReport {
+    DoctorReport {
+        checks: vec![DoctorCheck {
+            name: name.to_string(),
+            ok: false,
+            summary: error.to_string(),
+            details: Vec::new(),
+        }],
+        ok: false,
     }
 }
 

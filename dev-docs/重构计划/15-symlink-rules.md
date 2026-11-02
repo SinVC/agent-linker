@@ -8,10 +8,10 @@
 
 ## 代码入口
 
-- [ensure_symlink](../../src/core/symlink.rs#L286)、[CreateSymlinkOptions](../../src/core/symlink.rs#L241)、[LinkStatus](../../src/core/symlink.rs#L78)。
-- [plan_symlink](../../src/core/project_links.rs#L987)、[preflight_unlink](../../src/core/project_links.rs#L847)、[planned_remove_outcome](../../src/core/project_links.rs#L896)。
-- [LinkOptions](../../src/core/project_links.rs#L98)、[create_symlink_options](../../src/core/project_links.rs#L1046)。
-- [init 的创建选项](../../src/core/manifest.rs#L168)、[Provider 删除入口](../../src/core/symlink.rs#L391)。
+- [src/core/symlink.rs · `pub fn evaluate_create`](../../src/core/symlink.rs#L305)。
+- [src/core/symlink.rs · `pub fn evaluate_remove`](../../src/core/symlink.rs#L348)。
+- [src/core/symlink.rs · `pub struct CreateSymlinkOptions`](../../src/core/symlink.rs#L248)。
+- [src/core/symlink.rs · `pub fn ensure_symlink`](../../src/core/symlink.rs#L285)。
 
 ## 修改清单
 
@@ -31,4 +31,4 @@
 
 ## 执行记录
 
-未执行。完成时填写共享规则位置、删除的重复分支和验证结果，再勾选 TODO 15。
+实现、验证结果和未解决问题统一记录于[阶段三进度 · 15](阶段三进度.md#步骤-15)。

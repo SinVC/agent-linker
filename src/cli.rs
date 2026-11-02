@@ -14,7 +14,7 @@ use crate::{
         HarnessCommand, LinkCommand, LinkableCommand, StatusCommand, UnlinkCommand, UnlinkTarget,
     },
     core::{
-        error::{Error, Result},
+        error::Error,
         linkable::LinkableItem,
         project_links::{
             CleanMode, CleanOptions, LinkItemReport, LinkItemRequest, LinkOptions, StatusReport,
@@ -130,55 +130,56 @@ impl From<CliLinkKind> for LinkKind {
 }
 
 #[derive(Debug, Subcommand)]
-enum CliSkillCommand {
-    Add {
-        path: PathBuf,
-        #[arg(long)]
-        name: Option<String>,
-        #[arg(long)]
-        alias: Option<String>,
-    },
+enum CliItemCommand<A: clap::Args> {
+    Add(A),
     List,
-    Show {
-        name: String,
-    },
-    Rename {
-        old: String,
-        new: String,
-    },
-    Remove {
-        name: String,
-    },
-    Refresh {
-        name: String,
-    },
+    Show { name: String },
+    Rename { old: String, new: String },
+    Remove { name: String },
+    Refresh { name: String },
 }
 
-#[derive(Debug, Subcommand)]
-enum CliResourceCommand {
-    Add {
-        path: PathBuf,
-        #[arg(long = "target-dir")]
-        target_dir: PathBuf,
-        #[arg(long)]
-        name: Option<String>,
-        #[arg(long)]
-        alias: Option<String>,
-    },
-    List,
-    Show {
-        name: String,
-    },
-    Rename {
-        old: String,
-        new: String,
-    },
-    Remove {
-        name: String,
-    },
-    Refresh {
-        name: String,
-    },
+type CliSkillCommand = CliItemCommand<CliSkillAddArgs>;
+type CliResourceCommand = CliItemCommand<CliResourceAddArgs>;
+
+#[derive(Debug, clap::Args)]
+struct CliSkillAddArgs {
+    path: PathBuf,
+    #[arg(long)]
+    name: Option<String>,
+    #[arg(long)]
+    alias: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+struct CliResourceAddArgs {
+    #[command(flatten)]
+    common: CliSkillAddArgs,
+    #[arg(long = "target-dir")]
+    target_dir: PathBuf,
+}
+
+impl From<CliSkillAddArgs> for LinkableCommand {
+    fn from(args: CliSkillAddArgs) -> Self {
+        Self::Add {
+            path: args.path,
+            name: args.name,
+            alias: args.alias,
+            target_dir: None,
+        }
+    }
+}
+
+impl From<CliResourceAddArgs> for LinkableCommand {
+    fn from(args: CliResourceAddArgs) -> Self {
+        let CliSkillAddArgs { path, name, alias } = args.common;
+        Self::Add {
+            path,
+            name,
+            alias,
+            target_dir: Some(args.target_dir),
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -222,11 +223,11 @@ enum CliGroupCommand {
 }
 
 #[derive(Debug, clap::Args)]
+#[command(group(clap::ArgGroup::new("target").required(true).args(["name", "group"])))]
 struct CliLinkArgs {
-    #[arg(conflicts_with = "group")]
     name: Option<String>,
 
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["as_name", "target_dir"])]
     group: Option<String>,
 
     #[arg(long = "as")]
@@ -243,11 +244,11 @@ struct CliLinkArgs {
 }
 
 #[derive(Debug, clap::Args)]
+#[command(group(clap::ArgGroup::new("target").required(true).args(["name", "group", "all"])))]
 struct CliUnlinkArgs {
-    #[arg(conflicts_with_all = ["group", "all"])]
     name: Option<String>,
 
-    #[arg(long, conflicts_with = "all")]
+    #[arg(long)]
     group: Option<String>,
 
     #[arg(long)]
@@ -265,7 +266,7 @@ struct CliStatusArgs {
 
 #[derive(Debug, clap::Args)]
 struct CliCleanArgs {
-    #[arg(long)]
+    #[arg(long, conflicts_with = "missing_source")]
     broken: bool,
 
     #[arg(long = "missing-source")]
@@ -303,13 +304,7 @@ where
         quiet: cli.quiet,
         verbose: cli.verbose,
     };
-    let command = match command_from_cli(cli) {
-        Ok(command) => command,
-        Err(error) => {
-            print_error(&error, options);
-            return ExitCode::FAILURE;
-        }
-    };
+    let command = command_from_cli(cli);
 
     let report = match commands::run(command) {
         Ok(report) => report,
@@ -342,25 +337,25 @@ fn parse_error_exit_code(error: &clap::Error) -> ExitCode {
     }
 }
 
-fn command_from_cli(cli: Cli) -> Result<Command> {
+fn command_from_cli(cli: Cli) -> Command {
     let verbose = cli.verbose;
     match cli.command {
-        CliCommand::Init => Ok(Command::Init),
-        CliCommand::Db { command } => Ok(Command::Db(match command {
+        CliCommand::Init => Command::Init,
+        CliCommand::Db { command } => Command::Db(match command {
             CliDbCommand::Path => DbCommand::Path,
             CliDbCommand::Migrate => DbCommand::Migrate,
             CliDbCommand::Backup { path } => DbCommand::Backup { path },
             CliDbCommand::Check => DbCommand::Check,
-        })),
-        CliCommand::Harness { command } => Ok(Command::Harness(harness_command(command))),
-        CliCommand::Skill { command } => Ok(Command::Skill(skill_command(command))),
-        CliCommand::Resource { command } => Ok(Command::Resource(resource_command(command))),
-        CliCommand::Group { command } => Ok(Command::Group(group_command(command))),
-        CliCommand::Link(args) => Ok(Command::Link(link_command(args)?)),
-        CliCommand::Unlink(args) => Ok(Command::Unlink(unlink_command(args)?)),
-        CliCommand::Status(args) => Ok(Command::Status(StatusCommand { json: args.json })),
-        CliCommand::Clean(args) => Ok(Command::Clean(clean_command(args)?)),
-        CliCommand::Doctor => Ok(Command::Doctor(DoctorCommand { verbose })),
+        }),
+        CliCommand::Harness { command } => Command::Harness(harness_command(command)),
+        CliCommand::Skill { command } => Command::Skill(item_command(command)),
+        CliCommand::Resource { command } => Command::Resource(item_command(command)),
+        CliCommand::Group { command } => group_command(command),
+        CliCommand::Link(args) => Command::Link(link_command(args)),
+        CliCommand::Unlink(args) => Command::Unlink(unlink_command(args)),
+        CliCommand::Status(args) => Command::Status(StatusCommand { json: args.json }),
+        CliCommand::Clean(args) => Command::Clean(clean_command(args)),
+        CliCommand::Doctor => Command::Doctor(DoctorCommand { verbose }),
     }
 }
 
@@ -390,45 +385,21 @@ fn harness_command(command: CliHarnessCommand) -> HarnessCommand {
     }
 }
 
-fn skill_command(command: CliSkillCommand) -> LinkableCommand {
+fn item_command<A: clap::Args + Into<LinkableCommand>>(
+    command: CliItemCommand<A>,
+) -> LinkableCommand {
     match command {
-        CliSkillCommand::Add { path, name, alias } => LinkableCommand::Add {
-            path,
-            name,
-            alias,
-            target_dir: None,
-        },
-        CliSkillCommand::List => LinkableCommand::List,
-        CliSkillCommand::Show { name } => LinkableCommand::Show { name },
-        CliSkillCommand::Rename { old, new } => LinkableCommand::Rename { old, new },
-        CliSkillCommand::Remove { name } => LinkableCommand::Remove { name },
-        CliSkillCommand::Refresh { name } => LinkableCommand::Refresh { name },
+        CliItemCommand::Add(args) => args.into(),
+        CliItemCommand::List => LinkableCommand::List,
+        CliItemCommand::Show { name } => LinkableCommand::Show { name },
+        CliItemCommand::Rename { old, new } => LinkableCommand::Rename { old, new },
+        CliItemCommand::Remove { name } => LinkableCommand::Remove { name },
+        CliItemCommand::Refresh { name } => LinkableCommand::Refresh { name },
     }
 }
 
-fn resource_command(command: CliResourceCommand) -> LinkableCommand {
-    match command {
-        CliResourceCommand::Add {
-            path,
-            target_dir,
-            name,
-            alias,
-        } => LinkableCommand::Add {
-            path,
-            name,
-            alias,
-            target_dir: Some(target_dir),
-        },
-        CliResourceCommand::List => LinkableCommand::List,
-        CliResourceCommand::Show { name } => LinkableCommand::Show { name },
-        CliResourceCommand::Rename { old, new } => LinkableCommand::Rename { old, new },
-        CliResourceCommand::Remove { name } => LinkableCommand::Remove { name },
-        CliResourceCommand::Refresh { name } => LinkableCommand::Refresh { name },
-    }
-}
-
-fn group_command(command: CliGroupCommand) -> GroupCommand {
-    match command {
+fn group_command(command: CliGroupCommand) -> Command {
+    Command::Group(match command {
         CliGroupCommand::Create { name } => GroupCommand::Create { name },
         CliGroupCommand::List => GroupCommand::List,
         CliGroupCommand::Show { name } => GroupCommand::Show { name },
@@ -440,80 +411,54 @@ fn group_command(command: CliGroupCommand) -> GroupCommand {
             group,
             dry_run,
             force,
-        } => GroupCommand::Link {
-            group,
-            options: LinkOptions { dry_run, force },
-        },
-        CliGroupCommand::Unlink { group, dry_run } => GroupCommand::Unlink {
-            group,
-            options: UnlinkOptions { dry_run },
-        },
-    }
+        } => {
+            return Command::Link(LinkCommand::Group {
+                group,
+                options: LinkOptions { dry_run, force },
+            })
+        }
+        CliGroupCommand::Unlink { group, dry_run } => {
+            return Command::Unlink(UnlinkCommand {
+                target: UnlinkTarget::Group(group),
+                options: UnlinkOptions { dry_run },
+            })
+        }
+    })
 }
 
-fn link_command(args: CliLinkArgs) -> Result<LinkCommand> {
+fn link_command(args: CliLinkArgs) -> LinkCommand {
     let options = LinkOptions {
         dry_run: args.dry_run,
         force: args.force,
     };
-
-    match (args.name, args.group) {
-        (Some(_), Some(_)) => Err(Error::invalid_arguments(
-            "usage: aglink link <name> [--as <link-name>] [--target-dir <dir>] [--dry-run] [--force] | aglink link --group <group> [--dry-run] [--force]",
-        )),
-        (None, Some(group)) => {
-            if args.as_name.is_some() || args.target_dir.is_some() {
-                return Err(Error::invalid_arguments(
-                    "--as and --target-dir are only valid for item links",
-                ));
-            }
-            Ok(LinkCommand::Group { group, options })
-        }
-        (Some(identifier), None) => Ok(LinkCommand::Item {
+    if let Some(group) = args.group {
+        LinkCommand::Group { group, options }
+    } else {
+        LinkCommand::Item {
             request: LinkItemRequest {
-                identifier,
+                identifier: args.name.expect("clap requires a link target"),
                 link_name_override: args.as_name,
                 target_dir_override: args.target_dir,
             },
             options,
-        }),
-        (None, None) => Err(Error::invalid_arguments(
-            "usage: aglink link <name> [--as <link-name>] [--target-dir <dir>] [--dry-run] [--force] | aglink link --group <group> [--dry-run] [--force]",
-        )),
+        }
     }
 }
 
-fn unlink_command(args: CliUnlinkArgs) -> Result<UnlinkCommand> {
-    let selected = args.name.is_some() as u8 + args.group.is_some() as u8 + args.all as u8;
-    if selected != 1 {
-        return Err(Error::invalid_arguments(
-            "usage: aglink unlink <name>|--group <group>|--all [--dry-run]",
-        ));
-    }
-
-    let target = if let Some(group) = args.group {
-        UnlinkTarget::Group(group)
-    } else if args.all {
-        UnlinkTarget::Item(None)
-    } else {
-        UnlinkTarget::Item(args.name)
+fn unlink_command(args: CliUnlinkArgs) -> UnlinkCommand {
+    let target = match args.group {
+        Some(group) => UnlinkTarget::Group(group),
+        None => UnlinkTarget::Item(args.name),
     };
-
-    Ok(UnlinkCommand {
+    UnlinkCommand {
         target,
         options: UnlinkOptions {
             dry_run: args.dry_run,
         },
-    })
+    }
 }
 
-fn clean_command(args: CliCleanArgs) -> Result<CleanCommand> {
-    if args.broken && args.missing_source {
-        return Err(Error::invalid_arguments(
-            "usage: aglink clean [--broken|--missing-source] [--dry-run]",
-        ));
-    }
-
+fn clean_command(args: CliCleanArgs) -> CleanCommand {
     let mode = if args.broken {
         CleanMode::Broken
     } else if args.missing_source {
@@ -521,13 +466,12 @@ fn clean_command(args: CliCleanArgs) -> Result<CleanCommand> {
     } else {
         CleanMode::Default
     };
-
-    Ok(CleanCommand {
+    CleanCommand {
         options: CleanOptions {
             mode,
             dry_run: args.dry_run,
         },
-    })
+    }
 }
 
 fn write_report(
@@ -980,8 +924,25 @@ fn yes_no(value: bool) -> &'static str {
     }
 }
 
-fn print_error(error: &Error, _options: OutputOptions) {
-    eprintln!("aglink: {error}");
+fn print_error(error: &Error, options: OutputOptions) {
+    let message = error.to_string();
+    eprintln!("aglink: {message}");
+    if options.verbose {
+        let mut source = std::error::Error::source(error);
+        let mut first = true;
+        while let Some(cause) = source {
+            if !first || cause.to_string() != message {
+                eprintln!("  caused by: {cause}");
+            }
+            if let Some(io) = cause.downcast_ref::<io::Error>() {
+                if let Some(code) = io.raw_os_error() {
+                    eprintln!("  system_code={code}");
+                }
+            }
+            first = false;
+            source = cause.source();
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]

@@ -1,31 +1,23 @@
-//! Project link/status/unlink orchestration.
-
-use std::{
-    collections::BTreeSet,
-    fs,
-    path::{Path, PathBuf},
-};
-
-#[cfg(windows)]
-use std::time::{SystemTime, UNIX_EPOCH};
-
+//! Plan, validate and execute managed project link changes.
 use crate::core::{
     error::{Error, Result},
     linkable::{
         validate_optional_alias, validate_project_relative_target_dir, validate_resource_source,
         validate_skill_source, LinkableItem, LinkableItemType,
     },
-    manifest::{load_manifest, manifest_path, save_manifest, LinkOrigin, LinkRecord},
-    paths::{
-        self, current_project_root, managed_relative_path_key, normalize_windows_path,
-        resolve_managed_project_path, DbPathResolution,
-    },
-    store::{self, Store},
+    manifest::{load_manifest, manifest_path, save_manifest, LinkOrigin, LinkRecord, Manifest},
+    paths::{managed_relative_path_key, normalize_windows_path, resolve_managed_project_path},
+    store::Store,
     symlink::{
-        default_provider, ensure_symlink, CreateSymlinkOptions, CreateSymlinkOutcome, LinkStatus,
-        RemoveSymlinkOutcome, SymlinkBackend, SymlinkError, SymlinkErrorKind, SymlinkProvider,
+        evaluate_create, evaluate_remove, CreateSymlinkOptions, CreateSymlinkOutcome, LinkKind,
+        LinkStatus, RemoveSymlinkOutcome, SymlinkBackend, SymlinkProvider,
     },
     util::timestamp,
+};
+use std::{
+    collections::{btree_map::Entry, BTreeMap, BTreeSet},
+    fs,
+    path::{Path, PathBuf},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,245 +122,241 @@ pub struct CleanReport {
     pub dry_run: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DoctorReport {
-    pub checks: Vec<DoctorCheck>,
-    pub ok: bool,
+pub struct ProjectCtx<'a> {
+    pub root: &'a Path,
+    pub provider: &'a mut dyn SymlinkProvider,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DoctorCheck {
-    pub name: String,
-    pub ok: bool,
-    pub summary: String,
-    pub details: Vec<String>,
+struct LinkPlan {
+    manifest: Manifest,
+    dirs: BTreeMap<PathBuf, PathBuf>,
+    changes: Vec<PlannedChange>,
 }
 
-pub fn link_current_project(request: LinkItemRequest) -> Result<LinkItemReport> {
-    link_current_project_with_options(request, LinkOptions::default())
+enum PlannedChange {
+    Create {
+        source: PathBuf,
+        link: PathBuf,
+        kind: LinkKind,
+        outcome: CreateSymlinkOutcome,
+    },
+    Remove {
+        link: PathBuf,
+        outcome: RemoveSymlinkOutcome,
+    },
 }
 
-pub fn link_current_project_with_options(
-    request: LinkItemRequest,
-    options: LinkOptions,
-) -> Result<LinkItemReport> {
-    let project_root = current_project_root()?;
-    let mut provider = default_provider();
-    let resolution = paths::resolve_database_path()?;
-    link_project_with_provider_and_db_with_options(
-        &project_root,
-        provider.as_mut(),
-        &resolution,
-        request,
-        options,
-    )
+impl LinkPlan {
+    fn new(root: &Path) -> Result<Self> {
+        Ok(Self {
+            manifest: load_manifest(root)?,
+            dirs: BTreeMap::new(),
+            changes: Vec::new(),
+        })
+    }
+
+    fn execute(&mut self, ctx: &mut ProjectCtx, dry_run: bool) -> Result<()> {
+        self.manifest.validate()?;
+        if dry_run {
+            return Ok(());
+        }
+        for dir in self.dirs.values() {
+            let path = resolve_managed_project_path(ctx.root, dir)?;
+            fs::create_dir(&path).map_err(|error| Error::io(&path, error))?;
+        }
+        for change in &mut self.changes {
+            match change {
+                PlannedChange::Create {
+                    source,
+                    link,
+                    kind,
+                    outcome,
+                } => match outcome {
+                    CreateSymlinkOutcome::Created => {
+                        ctx.provider.create_symlink(source, link, *kind)?
+                    }
+                    CreateSymlinkOutcome::ReplacedWrongSymlink => {
+                        ctx.provider.replace_symlink(source, link, *kind)?
+                    }
+                    CreateSymlinkOutcome::AlreadyCorrect => {}
+                },
+                PlannedChange::Remove { link, outcome } => {
+                    *outcome = ctx.provider.remove_symlink(link)?;
+                }
+            }
+        }
+        save_manifest(ctx.root, &self.manifest)
+    }
+
+    fn add_item(
+        &mut self,
+        ctx: &ProjectCtx,
+        item: LinkableItem,
+        link_name: Option<&str>,
+        target_dir: Option<&Path>,
+        opts: LinkOptions,
+    ) -> Result<LinkItemReport> {
+        validate_registered_source(&item)?;
+        let link_path: PathBuf = project_link_path_for_item(&item, link_name, target_dir)?
+            .components()
+            .filter(|part| *part != std::path::Component::CurDir)
+            .collect();
+        let key = managed_relative_path_key(&link_path);
+        let mut record_id = manifest_record_id(&item, &link_path);
+        for existing in &self.manifest.links {
+            let existing_key = managed_relative_path_key(&existing.link_path);
+            if existing.origin == LinkOrigin::Item
+                && existing.item_id == item.id
+                && existing_key == key
+            {
+                record_id = existing.id.clone();
+                continue;
+            }
+            if key == existing_key
+                || key.starts_with(&existing_key)
+                || existing_key.starts_with(&key)
+            {
+                return Err(Error::conflict(format!(
+                    "project link path '{}' conflicts with managed '{}'",
+                    link_path.display(),
+                    existing.link_path.display()
+                )));
+            }
+        }
+        let absolute_link = resolve_managed_project_path(ctx.root, &link_path)?;
+        let dirs = missing_parent_dirs(ctx.root, &link_path)?;
+        let created_dirs = dirs
+            .into_iter()
+            .filter(
+                |dir| match self.dirs.entry(managed_relative_path_key(dir)) {
+                    Entry::Vacant(entry) => {
+                        entry.insert(dir.clone());
+                        true
+                    }
+                    Entry::Occupied(_) => false,
+                },
+            )
+            .collect();
+        let state =
+            ctx.provider
+                .link_status(&item.source_path, &absolute_link, item.source_kind)?;
+        let outcome = evaluate_create(
+            &state,
+            true,
+            &item.source_path,
+            &absolute_link,
+            ctx.provider.backend(),
+            CreateSymlinkOptions { force: opts.force },
+        )?;
+        self.changes.push(PlannedChange::Create {
+            source: item.source_path.clone(),
+            link: absolute_link,
+            kind: item.source_kind,
+            outcome,
+        });
+        self.manifest.upsert(link_record_from_item(
+            &item,
+            &link_path,
+            ctx.provider.backend(),
+            &record_id,
+        ));
+        Ok(LinkItemReport {
+            project_root: ctx.root.to_path_buf(),
+            manifest_path: manifest_path(ctx.root),
+            item_name: item.name,
+            item_type: item.item_type,
+            source_path: item.source_path,
+            link_path,
+            outcome,
+            provider_backend: ctx.provider.backend(),
+            dry_run: opts.dry_run,
+            created_dirs,
+        })
+    }
+
+    fn remove_selected(
+        &mut self,
+        ctx: &ProjectCtx,
+        selected: &BTreeSet<usize>,
+    ) -> Result<Vec<UnlinkEntry>> {
+        let mut outcomes = Vec::new();
+        let mut remaining = Vec::new();
+        for (index, record) in self.manifest.links.iter().cloned().enumerate() {
+            if !selected.contains(&index) {
+                remaining.push(record);
+                continue;
+            }
+            let source = project_path(ctx.root, &record.source_path)?;
+            let link = resolve_managed_project_path(ctx.root, &record.link_path)?;
+            let state = ctx.provider.link_status(&source, &link, record.link_kind)?;
+            let outcome = evaluate_remove(&state, &link, ctx.provider.backend())?;
+            self.changes.push(PlannedChange::Remove {
+                link: link.clone(),
+                outcome,
+            });
+            outcomes.push(UnlinkEntry {
+                record,
+                absolute_link_path: link,
+                outcome,
+            });
+        }
+        self.manifest.links = remaining;
+        Ok(outcomes)
+    }
 }
 
-pub fn link_project_with_provider(
-    project_root: &Path,
-    provider: &mut dyn SymlinkProvider,
-    request: LinkItemRequest,
-) -> Result<LinkItemReport> {
-    let resolution = paths::resolve_database_path()?;
-    link_project_with_provider_and_db(project_root, provider, &resolution, request)
-}
-
-pub fn link_project_with_provider_and_db(
-    project_root: &Path,
-    provider: &mut dyn SymlinkProvider,
-    resolution: &DbPathResolution,
-    request: LinkItemRequest,
-) -> Result<LinkItemReport> {
-    link_project_with_provider_and_db_with_options(
-        project_root,
-        provider,
-        resolution,
-        request,
-        LinkOptions::default(),
-    )
-}
-
-pub fn link_project_with_provider_and_db_with_options(
-    project_root: &Path,
-    provider: &mut dyn SymlinkProvider,
-    resolution: &DbPathResolution,
-    request: LinkItemRequest,
-    options: LinkOptions,
-) -> Result<LinkItemReport> {
-    let store = Store::open_ro(resolution)?;
-    link_project_with_provider_and_store(project_root, provider, &store, request, options)
-}
-
-fn link_project_with_provider_and_store(
-    project_root: &Path,
-    provider: &mut dyn SymlinkProvider,
+pub fn link_item(
+    ctx: &mut ProjectCtx,
     store: &Store,
-    request: LinkItemRequest,
-    options: LinkOptions,
+    req: &LinkItemRequest,
+    opts: LinkOptions,
 ) -> Result<LinkItemReport> {
-    let item = store.find_any_item(&request.identifier)?;
-    link_project_item_with_provider(
-        project_root,
-        provider,
+    let item = store.find_any_item(&req.identifier)?;
+    let mut plan = LinkPlan::new(ctx.root)?;
+    let report = plan.add_item(
+        ctx,
         item,
-        request.link_name_override.as_deref(),
-        request.target_dir_override.as_deref(),
-        options,
-    )
+        req.link_name_override.as_deref(),
+        req.target_dir_override.as_deref(),
+        opts,
+    )?;
+    plan.execute(ctx, opts.dry_run)?;
+    Ok(report)
 }
 
-fn link_project_item_with_provider(
-    project_root: &Path,
-    provider: &mut dyn SymlinkProvider,
-    item: LinkableItem,
-    link_name_override: Option<&str>,
-    target_dir_override: Option<&Path>,
-    options: LinkOptions,
-) -> Result<LinkItemReport> {
-    validate_registered_source(&item)?;
-
-    let link_path = project_link_path_for_item(&item, link_name_override, target_dir_override)?;
-    let created_dirs = prepare_link_parent(project_root, &link_path, !options.dry_run)?;
-
-    let source_path = item.source_path.clone();
-    let absolute_link_path = resolve_managed_project_path(project_root, &link_path)?;
-    let mut manifest = load_manifest(project_root)?;
-    let record_id = manifest_record_id(&item, &link_path);
-
-    if let Some(existing) = manifest.links.iter().find(|link| {
-        managed_relative_path_key(&link.link_path) == managed_relative_path_key(&link_path)
-            && link.id != record_id
-    }) {
-        return Err(Error::manifest(format!(
-            "project link path `{}` is already managed by `{}`",
-            link_path.display(),
-            existing.item_name
-        )));
-    }
-
-    let symlink_options = create_symlink_options(options.force);
-    let outcome = if options.dry_run {
-        plan_symlink(
-            provider,
-            &source_path,
-            &absolute_link_path,
-            item.source_kind,
-            symlink_options,
-        )?
-    } else {
-        ensure_symlink(
-            provider,
-            &source_path,
-            &absolute_link_path,
-            item.source_kind,
-            symlink_options,
-        )?
-    };
-
-    if !options.dry_run {
-        let record = link_record_from_item(&item, &link_path, provider.backend(), &record_id);
-        manifest.upsert(record);
-        save_manifest(project_root, &manifest)?;
-    }
-
-    Ok(LinkItemReport {
-        project_root: project_root.to_path_buf(),
-        manifest_path: manifest_path(project_root),
-        item_name: item.name,
-        item_type: item.item_type,
-        source_path,
-        link_path,
-        outcome,
-        provider_backend: provider.backend(),
-        dry_run: options.dry_run,
-        created_dirs,
-    })
-}
-
-pub fn link_group_current_project(group: &str) -> Result<LinkGroupReport> {
-    link_group_current_project_with_options(group, LinkOptions::default())
-}
-
-pub fn link_group_current_project_with_options(
+pub fn link_group(
+    ctx: &mut ProjectCtx,
+    store: &Store,
     group: &str,
-    options: LinkOptions,
+    opts: LinkOptions,
 ) -> Result<LinkGroupReport> {
-    let project_root = current_project_root()?;
-    let mut provider = default_provider();
-    let resolution = paths::resolve_database_path()?;
-    link_group_project_with_provider_and_db_with_options(
-        &project_root,
-        provider.as_mut(),
-        &resolution,
-        group,
-        options,
-    )
-}
-
-pub fn link_group_project_with_provider_and_db(
-    project_root: &Path,
-    provider: &mut dyn SymlinkProvider,
-    resolution: &DbPathResolution,
-    group: &str,
-) -> Result<LinkGroupReport> {
-    link_group_project_with_provider_and_db_with_options(
-        project_root,
-        provider,
-        resolution,
-        group,
-        LinkOptions::default(),
-    )
-}
-
-pub fn link_group_project_with_provider_and_db_with_options(
-    project_root: &Path,
-    provider: &mut dyn SymlinkProvider,
-    resolution: &DbPathResolution,
-    group: &str,
-    options: LinkOptions,
-) -> Result<LinkGroupReport> {
-    let store = Store::open_ro(resolution)?;
     let group = store.show_group(group)?;
-    let group_name = group.name;
+    let mut plan = LinkPlan::new(ctx.root)?;
     let mut reports = Vec::new();
     for item in group.items {
-        reports.push(link_project_item_with_provider(
-            project_root,
-            provider,
-            item,
-            None,
-            None,
-            options,
-        )?);
+        reports.push(plan.add_item(ctx, item, None, None, opts)?);
     }
-
+    plan.execute(ctx, opts.dry_run)?;
     Ok(LinkGroupReport {
-        project_root: project_root.to_path_buf(),
-        manifest_path: manifest_path(project_root),
-        group_name,
+        project_root: ctx.root.to_path_buf(),
+        manifest_path: manifest_path(ctx.root),
+        group_name: group.name,
         reports,
-        dry_run: options.dry_run,
+        dry_run: opts.dry_run,
     })
 }
 
-pub fn status_current_project() -> Result<StatusReport> {
-    let project_root = current_project_root()?;
-    let provider = default_provider();
-    status_project_with_provider(&project_root, provider.as_ref())
-}
-
-pub fn status_project_with_provider(
-    project_root: &Path,
-    provider: &dyn SymlinkProvider,
-) -> Result<StatusReport> {
-    let manifest = load_manifest(project_root)?;
+pub fn status(ctx: &mut ProjectCtx) -> Result<StatusReport> {
+    let manifest = load_manifest(ctx.root)?;
     let mut entries = Vec::new();
-
     for record in manifest.links {
-        let absolute_source_path = project_path(project_root, &record.source_path)?;
-        let absolute_link_path = resolve_managed_project_path(project_root, &record.link_path)?;
-        let status =
-            provider.link_status(&absolute_source_path, &absolute_link_path, record.link_kind)?;
+        let absolute_source_path = project_path(ctx.root, &record.source_path)?;
+        let absolute_link_path = resolve_managed_project_path(ctx.root, &record.link_path)?;
+        let status = ctx.provider.link_status(
+            &absolute_source_path,
+            &absolute_link_path,
+            record.link_kind,
+        )?;
         entries.push(StatusEntry {
             record,
             absolute_source_path,
@@ -376,569 +364,137 @@ pub fn status_project_with_provider(
             status,
         });
     }
-
     Ok(StatusReport {
-        project_root: project_root.to_path_buf(),
-        manifest_path: manifest_path(project_root),
+        project_root: ctx.root.to_path_buf(),
+        manifest_path: manifest_path(ctx.root),
         entries,
     })
 }
 
-pub fn unlink_current_project(identifier: Option<String>) -> Result<UnlinkReport> {
-    unlink_current_project_with_options(identifier, UnlinkOptions::default())
-}
-
-pub fn unlink_current_project_with_options(
-    identifier: Option<String>,
-    options: UnlinkOptions,
+pub fn unlink(
+    ctx: &mut ProjectCtx,
+    identifier: Option<&str>,
+    opts: UnlinkOptions,
 ) -> Result<UnlinkReport> {
-    let project_root = current_project_root()?;
-    let mut provider = default_provider();
-    unlink_project_with_provider_with_options(&project_root, provider.as_mut(), identifier, options)
+    let plan = LinkPlan::new(ctx.root)?;
+    let selected = select_unlink_indexes(&plan.manifest.links, identifier)?;
+    execute_unlink(ctx, plan, &selected, opts)
 }
 
-pub fn unlink_project_with_provider(
-    project_root: &Path,
-    provider: &mut dyn SymlinkProvider,
-    identifier: Option<String>,
-) -> Result<UnlinkReport> {
-    unlink_project_with_provider_with_options(
-        project_root,
-        provider,
-        identifier,
-        UnlinkOptions::default(),
-    )
-}
-
-pub fn unlink_project_with_provider_with_options(
-    project_root: &Path,
-    provider: &mut dyn SymlinkProvider,
-    identifier: Option<String>,
-    options: UnlinkOptions,
-) -> Result<UnlinkReport> {
-    let manifest = load_manifest(project_root)?;
-    let selected_indexes = select_unlink_indexes(&manifest.links, identifier.as_deref())?;
-    unlink_selected_indexes(project_root, provider, manifest, &selected_indexes, options)
-}
-
-pub fn unlink_group_current_project(group: &str) -> Result<UnlinkReport> {
-    unlink_group_current_project_with_options(group, UnlinkOptions::default())
-}
-
-pub fn unlink_group_current_project_with_options(
+pub fn unlink_group(
+    ctx: &mut ProjectCtx,
+    store: &Store,
     group: &str,
-    options: UnlinkOptions,
+    opts: UnlinkOptions,
 ) -> Result<UnlinkReport> {
-    let project_root = current_project_root()?;
-    let mut provider = default_provider();
-    let resolution = paths::resolve_database_path()?;
-    unlink_group_project_with_provider_and_db_with_options(
-        &project_root,
-        provider.as_mut(),
-        &resolution,
-        group,
-        options,
-    )
-}
-
-pub fn unlink_group_project_with_provider_and_db(
-    project_root: &Path,
-    provider: &mut dyn SymlinkProvider,
-    resolution: &DbPathResolution,
-    group: &str,
-) -> Result<UnlinkReport> {
-    unlink_group_project_with_provider_and_db_with_options(
-        project_root,
-        provider,
-        resolution,
-        group,
-        UnlinkOptions::default(),
-    )
-}
-
-pub fn unlink_group_project_with_provider_and_db_with_options(
-    project_root: &Path,
-    provider: &mut dyn SymlinkProvider,
-    resolution: &DbPathResolution,
-    group: &str,
-    options: UnlinkOptions,
-) -> Result<UnlinkReport> {
-    let store = Store::open_ro(resolution)?;
     let group = store.show_group(group)?;
-    let manifest = load_manifest(project_root)?;
-    let item_ids: BTreeSet<&str> = group.items.iter().map(|item| item.id.as_str()).collect();
-    let selected_indexes: BTreeSet<usize> = manifest
+    let plan = LinkPlan::new(ctx.root)?;
+    let ids: BTreeSet<_> = group.items.iter().map(|item| &item.id).collect();
+    let selected = plan
+        .manifest
         .links
         .iter()
         .enumerate()
-        .filter_map(|(index, record)| {
-            (record.origin == LinkOrigin::Item && item_ids.contains(&record.item_id.as_str()))
-                .then_some(index)
+        .filter_map(|(i, record)| {
+            (record.origin == LinkOrigin::Item && ids.contains(&record.item_id)).then_some(i)
         })
         .collect();
-
-    unlink_selected_indexes(project_root, provider, manifest, &selected_indexes, options)
+    execute_unlink(ctx, plan, &selected, opts)
 }
 
-pub fn clean_current_project(mode: CleanMode) -> Result<CleanReport> {
-    clean_current_project_with_options(CleanOptions::new(mode))
+fn execute_unlink(
+    ctx: &mut ProjectCtx,
+    mut plan: LinkPlan,
+    selected: &BTreeSet<usize>,
+    opts: UnlinkOptions,
+) -> Result<UnlinkReport> {
+    let mut outcomes = plan.remove_selected(ctx, selected)?;
+    plan.execute(ctx, opts.dry_run)?;
+    for (entry, change) in outcomes.iter_mut().zip(&plan.changes) {
+        if let PlannedChange::Remove { outcome, .. } = change {
+            entry.outcome = *outcome;
+        }
+    }
+    Ok(UnlinkReport {
+        project_root: ctx.root.to_path_buf(),
+        manifest_path: manifest_path(ctx.root),
+        outcomes,
+        dry_run: opts.dry_run,
+    })
 }
 
-pub fn clean_current_project_with_options(options: CleanOptions) -> Result<CleanReport> {
-    let project_root = current_project_root()?;
-    let mut provider = default_provider();
-    clean_project_with_provider_with_options(&project_root, provider.as_mut(), options)
-}
-
-pub fn clean_project_with_provider(
-    project_root: &Path,
-    provider: &mut dyn SymlinkProvider,
-    mode: CleanMode,
-) -> Result<CleanReport> {
-    clean_project_with_provider_with_options(project_root, provider, CleanOptions::new(mode))
-}
-
-pub fn clean_project_with_provider_with_options(
-    project_root: &Path,
-    provider: &mut dyn SymlinkProvider,
-    options: CleanOptions,
-) -> Result<CleanReport> {
-    let mut manifest = load_manifest(project_root)?;
-    let mut selected_indexes = BTreeSet::new();
-    let mut drop_only_indexes = BTreeSet::new();
-
-    for (index, record) in manifest.links.iter().enumerate() {
-        let absolute_source_path = project_path(project_root, &record.source_path)?;
-        let absolute_link_path = resolve_managed_project_path(project_root, &record.link_path)?;
-        let status =
-            provider.link_status(&absolute_source_path, &absolute_link_path, record.link_kind)?;
-        let source_missing = if matches!(options.mode, CleanMode::MissingSource) {
-            source_is_missing(&absolute_source_path)?
-        } else {
-            false
+pub fn clean(ctx: &mut ProjectCtx, opts: CleanOptions) -> Result<CleanReport> {
+    let mut plan = LinkPlan::new(ctx.root)?;
+    let mut dropped_missing = Vec::new();
+    let mut removed = Vec::new();
+    let mut remaining = Vec::new();
+    for record in plan.manifest.links.iter().cloned() {
+        let source = project_path(ctx.root, &record.source_path)?;
+        let link = resolve_managed_project_path(ctx.root, &record.link_path)?;
+        let state = ctx.provider.link_status(&source, &link, record.link_kind)?;
+        let matches = match opts.mode {
+            CleanMode::Default => matches!(
+                state,
+                LinkStatus::Missing | LinkStatus::BrokenSymlink { .. }
+            ),
+            CleanMode::Broken => matches!(state, LinkStatus::BrokenSymlink { .. }),
+            CleanMode::MissingSource => source_is_missing(&source)?,
         };
-
-        let selected = match options.mode {
-            CleanMode::Default => {
-                matches!(
-                    status,
-                    LinkStatus::Missing | LinkStatus::BrokenSymlink { .. }
-                )
-            }
-            CleanMode::Broken => matches!(status, LinkStatus::BrokenSymlink { .. }),
-            CleanMode::MissingSource => source_missing,
-        };
-
-        if !selected {
+        if !matches {
+            remaining.push(record);
             continue;
         }
-
-        if matches!(status, LinkStatus::Missing) {
-            drop_only_indexes.insert(index);
-        } else {
-            selected_indexes.insert(index);
-        }
-    }
-
-    preflight_unlink(project_root, provider, &manifest.links, &selected_indexes)?;
-    let mut removed = Vec::new();
-    let mut dropped_missing = Vec::new();
-    let mut remaining = Vec::new();
-
-    let links = std::mem::take(&mut manifest.links);
-    for (index, record) in links.into_iter().enumerate() {
-        if selected_indexes.contains(&index) {
-            let absolute_link_path = resolve_managed_project_path(project_root, &record.link_path)?;
-            let outcome = if options.dry_run {
-                planned_remove_outcome(project_root, provider, &record)?
-            } else {
-                provider.remove_symlink(&absolute_link_path)?
-            };
-            removed.push(UnlinkEntry {
-                record,
-                absolute_link_path,
-                outcome,
-            });
-        } else if drop_only_indexes.contains(&index) {
+        let outcome = evaluate_remove(&state, &link, ctx.provider.backend())?;
+        if outcome == RemoveSymlinkOutcome::Missing {
             dropped_missing.push(record);
         } else {
-            remaining.push(record);
-        }
-    }
-
-    if !options.dry_run {
-        manifest.links = remaining;
-        save_manifest(project_root, &manifest)?;
-    }
-
-    Ok(CleanReport {
-        project_root: project_root.to_path_buf(),
-        manifest_path: manifest_path(project_root),
-        removed,
-        dropped_missing,
-        dry_run: options.dry_run,
-    })
-}
-
-pub fn doctor_current_project(verbose: bool) -> DoctorReport {
-    let project_root = match current_project_root() {
-        Ok(root) => root,
-        Err(error) => {
-            return DoctorReport {
-                checks: vec![DoctorCheck {
-                    name: "project-root".to_string(),
-                    ok: false,
-                    summary: error.to_string(),
-                    details: Vec::new(),
-                }],
-                ok: false,
-            }
-        }
-    };
-    let resolution = match paths::resolve_database_path() {
-        Ok(resolution) => resolution,
-        Err(error) => {
-            return DoctorReport {
-                checks: vec![DoctorCheck {
-                    name: "database-path".to_string(),
-                    ok: false,
-                    summary: error.to_string(),
-                    details: Vec::new(),
-                }],
-                ok: false,
-            };
-        }
-    };
-
-    doctor_project(&project_root, &resolution, verbose)
-}
-
-pub fn doctor_project(
-    project_root: &Path,
-    resolution: &DbPathResolution,
-    verbose: bool,
-) -> DoctorReport {
-    let mut checks = Vec::new();
-
-    checks.push(match store::check_database(resolution) {
-        Ok(report) => DoctorCheck {
-            name: "database".to_string(),
-            ok: report.is_ok(),
-            summary: report.status.as_str().to_string(),
-            details: verbose
-                .then(|| {
-                    let mut details = vec![
-                        format!("path={}", report.path.display()),
-                        format!("reason={}", report.reason.as_str()),
-                        format!("exists={}", report.exists),
-                        format!("status={}", report.status.as_str()),
-                        format!(
-                            "schema={}/{}",
-                            report.schema_version.map_or_else(
-                                || "missing".to_string(),
-                                |version| version.to_string()
-                            ),
-                            report.latest_schema_version
-                        ),
-                    ];
-                    details.extend(report.details.clone());
-                    details
-                })
-                .unwrap_or_default(),
-        },
-        Err(error) => DoctorCheck {
-            name: "database".to_string(),
-            ok: false,
-            summary: error.to_string(),
-            details: Vec::new(),
-        },
-    });
-
-    checks.push(match load_manifest(project_root) {
-        Ok(manifest) => DoctorCheck {
-            name: "manifest".to_string(),
-            ok: true,
-            summary: format!("{} managed links", manifest.links.len()),
-            details: verbose
-                .then(|| vec![format!("path={}", manifest_path(project_root).display())])
-                .unwrap_or_default(),
-        },
-        Err(error) => DoctorCheck {
-            name: "manifest".to_string(),
-            ok: false,
-            summary: error.to_string(),
-            details: verbose
-                .then(|| vec![format!("path={}", manifest_path(project_root).display())])
-                .unwrap_or_default(),
-        },
-    });
-
-    checks.push(
-        match Store::open_ro(resolution).and_then(|store| store.list_harnesses()) {
-            Ok(harnesses) => {
-                let mapping_count: usize =
-                    harnesses.iter().map(|harness| harness.mappings.len()).sum();
-                DoctorCheck {
-                    name: "harness-adapter".to_string(),
-                    ok: true,
-                    summary: format!("{} harnesses, {} mappings", harnesses.len(), mapping_count),
-                    details: verbose
-                        .then(|| {
-                            harnesses
-                                .iter()
-                                .map(|harness| {
-                                    format!(
-                                        "{} enabled={} mappings={}",
-                                        harness.name,
-                                        harness.enabled,
-                                        harness.mappings.len()
-                                    )
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                }
-            }
-            Err(error) => DoctorCheck {
-                name: "harness-adapter".to_string(),
-                ok: false,
-                summary: error.to_string(),
-                details: Vec::new(),
-            },
-        },
-    );
-
-    let provider = default_provider();
-    checks.push(DoctorCheck {
-        name: "symlink-backend".to_string(),
-        ok: true,
-        summary: provider.backend().to_string(),
-        details: verbose
-            .then(|| vec![format!("backend={}", provider.backend())])
-            .unwrap_or_default(),
-    });
-    drop(provider);
-
-    checks.push(check_broker_probe(verbose));
-
-    let ok = checks.iter().all(|check| check.ok);
-    DoctorReport { checks, ok }
-}
-
-fn check_broker_probe(verbose: bool) -> DoctorCheck {
-    #[cfg(windows)]
-    {
-        let mut provider = default_provider();
-        if provider.backend() != SymlinkBackend::WindowsBroker {
-            return DoctorCheck {
-                name: "windows-broker".to_string(),
-                ok: false,
-                summary: format!("unexpected backend {}", provider.backend()),
-                details: Vec::new(),
-            };
-        }
-
-        let probe_root = std::env::temp_dir().join(format!(
-            "agent-linker-broker-probe-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_nanos())
-        ));
-        let source = probe_root.join("source.txt");
-        let link = probe_root.join("link.txt");
-
-        let probe = (|| -> Result<()> {
-            fs::create_dir_all(&probe_root)?;
-            fs::write(&source, "probe")?;
-            provider.create_symlink(&source, &link, crate::core::symlink::LinkKind::File)?;
-            provider.remove_symlink(&link)?;
-            Ok(())
-        })();
-        let _ = fs::remove_dir_all(&probe_root);
-
-        match probe {
-            Ok(()) => DoctorCheck {
-                name: "windows-broker".to_string(),
-                ok: true,
-                summary: "available".to_string(),
-                details: verbose
-                    .then(|| {
-                        vec![
-                            "backend=windows-broker".to_string(),
-                            format!("probe_root={}", probe_root.display()),
-                        ]
-                    })
-                    .unwrap_or_default(),
-            },
-            Err(Error::Symlink(error)) => DoctorCheck {
-                name: "windows-broker".to_string(),
-                ok: false,
-                summary: error.kind().to_string(),
-                details: verbose
-                    .then(|| {
-                        let mut details = vec![format!("backend={}", error.backend())];
-                        if let Some(system_code) = error.system_code() {
-                            details.push(format!("system_code={system_code}"));
-                        }
-                        if let Some(broker_code) = error.broker_code() {
-                            details.push(format!("broker_code={broker_code}"));
-                        }
-                        if let Some(detail) = error.detail() {
-                            details.push(format!("detail={detail}"));
-                        }
-                        details
-                    })
-                    .unwrap_or_default(),
-            },
-            Err(error) => DoctorCheck {
-                name: "windows-broker".to_string(),
-                ok: false,
-                summary: error.to_string(),
-                details: Vec::new(),
-            },
-        }
-    }
-
-    #[cfg(not(windows))]
-    {
-        let _ = verbose;
-        DoctorCheck {
-            name: "windows-broker".to_string(),
-            ok: true,
-            summary: "not applicable".to_string(),
-            details: Vec::new(),
-        }
-    }
-}
-
-fn unlink_selected_indexes(
-    project_root: &Path,
-    provider: &mut dyn SymlinkProvider,
-    mut manifest: crate::core::manifest::Manifest,
-    selected_indexes: &BTreeSet<usize>,
-    options: UnlinkOptions,
-) -> Result<UnlinkReport> {
-    preflight_unlink(project_root, provider, &manifest.links, selected_indexes)?;
-    let mut outcomes = Vec::new();
-    let mut remaining = Vec::new();
-
-    let links = std::mem::take(&mut manifest.links);
-    for (index, record) in links.into_iter().enumerate() {
-        if selected_indexes.contains(&index) {
-            let absolute_link_path = resolve_managed_project_path(project_root, &record.link_path)?;
-            let outcome = if options.dry_run {
-                planned_remove_outcome(project_root, provider, &record)?
-            } else {
-                provider.remove_symlink(&absolute_link_path)?
-            };
-            outcomes.push(UnlinkEntry {
-                record,
-                absolute_link_path,
+            plan.changes.push(PlannedChange::Remove {
+                link: link.clone(),
                 outcome,
             });
-        } else {
-            remaining.push(record);
+            removed.push(UnlinkEntry {
+                record,
+                absolute_link_path: link,
+                outcome,
+            });
         }
     }
-
-    if !options.dry_run {
-        manifest.links = remaining;
-        save_manifest(project_root, &manifest)?;
+    plan.manifest.links = remaining;
+    plan.execute(ctx, opts.dry_run)?;
+    for (entry, change) in removed.iter_mut().zip(&plan.changes) {
+        if let PlannedChange::Remove { outcome, .. } = change {
+            entry.outcome = *outcome;
+        }
     }
-
-    Ok(UnlinkReport {
-        project_root: project_root.to_path_buf(),
-        manifest_path: manifest_path(project_root),
-        outcomes,
-        dry_run: options.dry_run,
+    Ok(CleanReport {
+        project_root: ctx.root.to_path_buf(),
+        manifest_path: manifest_path(ctx.root),
+        removed,
+        dropped_missing,
+        dry_run: opts.dry_run,
     })
 }
 
-fn preflight_unlink(
-    project_root: &Path,
-    provider: &dyn SymlinkProvider,
-    records: &[LinkRecord],
-    selected_indexes: &BTreeSet<usize>,
-) -> Result<()> {
-    for index in selected_indexes {
-        let record = &records[*index];
-        let absolute_source_path = project_path(project_root, &record.source_path)?;
-        let absolute_link_path = resolve_managed_project_path(project_root, &record.link_path)?;
-        match provider.link_status(&absolute_source_path, &absolute_link_path, record.link_kind)? {
-            LinkStatus::ExistingRealFile => {
-                return Err(SymlinkError::new(
-                    SymlinkErrorKind::ExistingRealFile,
-                    provider.backend(),
-                )
-                .with_source(absolute_source_path)
-                .with_link(absolute_link_path)
-                .into());
+fn missing_parent_dirs(root: &Path, link: &Path) -> Result<Vec<PathBuf>> {
+    let mut dirs = Vec::new();
+    let mut relative = PathBuf::new();
+    if let Some(parent) = link.parent() {
+        for part in parent
+            .components()
+            .filter(|part| *part != std::path::Component::CurDir)
+        {
+            relative.push(part.as_os_str());
+            let absolute = resolve_managed_project_path(root, &relative)?;
+            match fs::symlink_metadata(&absolute) {
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    dirs.push(relative.clone())
+                }
+                Err(error) => return Err(Error::io(&absolute, error)),
             }
-            LinkStatus::ExistingRealDirectory => {
-                return Err(SymlinkError::new(
-                    SymlinkErrorKind::ExistingRealDirectory,
-                    provider.backend(),
-                )
-                .with_source(absolute_source_path)
-                .with_link(absolute_link_path)
-                .into());
-            }
-            LinkStatus::UnsupportedFileType { path } => {
-                return Err(SymlinkError::new(
-                    SymlinkErrorKind::UnsupportedLinkKind,
-                    provider.backend(),
-                )
-                .with_source(absolute_source_path)
-                .with_link(absolute_link_path)
-                .with_detail(format!("unsupported file type at {}", path.display()))
-                .into());
-            }
-            LinkStatus::Missing
-            | LinkStatus::CorrectSymlink { .. }
-            | LinkStatus::WrongSymlinkTarget { .. }
-            | LinkStatus::BrokenSymlink { .. } => {}
         }
     }
-
-    Ok(())
-}
-
-fn planned_remove_outcome(
-    project_root: &Path,
-    provider: &dyn SymlinkProvider,
-    record: &LinkRecord,
-) -> Result<RemoveSymlinkOutcome> {
-    let absolute_source_path = project_path(project_root, &record.source_path)?;
-    let absolute_link_path = resolve_managed_project_path(project_root, &record.link_path)?;
-    match provider.link_status(&absolute_source_path, &absolute_link_path, record.link_kind)? {
-        LinkStatus::Missing => Ok(RemoveSymlinkOutcome::Missing),
-        LinkStatus::CorrectSymlink { .. }
-        | LinkStatus::WrongSymlinkTarget { .. }
-        | LinkStatus::BrokenSymlink { .. } => Ok(RemoveSymlinkOutcome::Removed),
-        LinkStatus::ExistingRealFile => Err(SymlinkError::new(
-            SymlinkErrorKind::ExistingRealFile,
-            provider.backend(),
-        )
-        .with_source(absolute_source_path)
-        .with_link(absolute_link_path)
-        .into()),
-        LinkStatus::ExistingRealDirectory => Err(SymlinkError::new(
-            SymlinkErrorKind::ExistingRealDirectory,
-            provider.backend(),
-        )
-        .with_source(absolute_source_path)
-        .with_link(absolute_link_path)
-        .into()),
-        LinkStatus::UnsupportedFileType { path } => Err(SymlinkError::new(
-            SymlinkErrorKind::UnsupportedLinkKind,
-            provider.backend(),
-        )
-        .with_source(absolute_source_path)
-        .with_link(absolute_link_path)
-        .with_detail(format!("unsupported file type at {}", path.display()))
-        .into()),
-    }
+    Ok(dirs)
 }
 
 fn validate_registered_source(item: &LinkableItem) -> Result<()> {
@@ -995,122 +551,11 @@ fn project_link_path_for_item(
     }
 }
 
-fn plan_symlink(
-    provider: &dyn SymlinkProvider,
-    source: &Path,
-    link: &Path,
-    kind: crate::core::symlink::LinkKind,
-    options: CreateSymlinkOptions,
-) -> Result<CreateSymlinkOutcome> {
-    match provider.link_status(source, link, kind)? {
-        LinkStatus::Missing => Ok(CreateSymlinkOutcome::Created),
-        LinkStatus::CorrectSymlink { .. } => Ok(CreateSymlinkOutcome::AlreadyCorrect),
-        LinkStatus::WrongSymlinkTarget { actual, expected } => {
-            if options.force {
-                Ok(CreateSymlinkOutcome::ReplacedWrongSymlink)
-            } else {
-                Err(
-                    SymlinkError::new(SymlinkErrorKind::WrongSymlinkTarget, provider.backend())
-                        .with_source(expected)
-                        .with_link(link)
-                        .with_detail(format!("existing link points to {}", actual.display()))
-                        .into(),
-                )
-            }
-        }
-        LinkStatus::BrokenSymlink { .. } if options.force => {
-            // Registered sources were validated before planning, just as for execution.
-            Ok(CreateSymlinkOutcome::ReplacedWrongSymlink)
-        }
-        LinkStatus::BrokenSymlink { target } => Err(SymlinkError::new(
-            SymlinkErrorKind::SourceNotFound,
-            provider.backend(),
-        )
-        .with_source(source)
-        .with_link(link)
-        .with_detail(format!(
-            "existing symlink points to missing source {}",
-            target.display()
-        ))
-        .into()),
-        LinkStatus::ExistingRealFile => Err(SymlinkError::new(
-            SymlinkErrorKind::ExistingRealFile,
-            provider.backend(),
-        )
-        .with_source(source)
-        .with_link(link)
-        .into()),
-        LinkStatus::ExistingRealDirectory => Err(SymlinkError::new(
-            SymlinkErrorKind::ExistingRealDirectory,
-            provider.backend(),
-        )
-        .with_source(source)
-        .with_link(link)
-        .into()),
-        LinkStatus::UnsupportedFileType { path } => Err(SymlinkError::new(
-            SymlinkErrorKind::UnsupportedLinkKind,
-            provider.backend(),
-        )
-        .with_source(source)
-        .with_link(link)
-        .with_detail(format!("unsupported file type at {}", path.display()))
-        .into()),
-    }
-}
-
-fn create_symlink_options(force: bool) -> CreateSymlinkOptions {
-    if force {
-        CreateSymlinkOptions::force_wrong_symlink()
-    } else {
-        CreateSymlinkOptions::new()
-    }
-}
-
-fn prepare_link_parent(
-    project_root: &Path,
-    relative_link_path: &Path,
-    create: bool,
-) -> Result<Vec<PathBuf>> {
-    resolve_managed_project_path(project_root, relative_link_path)?;
-
-    let Some(parent) = relative_link_path
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-    else {
-        return Ok(Vec::new());
-    };
-
-    let mut created_dirs = Vec::new();
-    let mut current_relative = PathBuf::new();
-    for component in parent
-        .components()
-        .filter(|component| *component != std::path::Component::CurDir)
-    {
-        current_relative.push(component.as_os_str());
-        let current = resolve_managed_project_path(project_root, &current_relative)?;
-        match fs::symlink_metadata(&current) {
-            Ok(_) => {} // Already checked as a parent of the full link path above.
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                created_dirs.push(current_relative.clone());
-                if create {
-                    fs::create_dir(&current)?;
-                }
-            }
-            Err(error) => return Err(error.into()),
-        }
-    }
-
-    Ok(created_dirs)
-}
-
 fn source_is_missing(path: &Path) -> Result<bool> {
     match fs::metadata(path) {
         Ok(_) => Ok(false),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
-        Err(error) => Err(Error::project(format!(
-            "cannot determine source status for {}: {error}",
-            path.display()
-        ))),
+        Err(error) => Err(Error::io(path, error)),
     }
 }
 
@@ -1130,7 +575,7 @@ fn link_record_from_item(
         source_path: item.source_path.clone(),
         link_path: link_path.to_path_buf(),
         link_kind: item.source_kind,
-        provider_backend: backend,
+        provider_backend: backend.to_string(),
         created_by_command: "link".to_string(),
         created_at: now.clone(),
         updated_at: now,

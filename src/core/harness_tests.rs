@@ -76,23 +76,24 @@ fn harness_api_lists_shows_toggles_and_returns_mappings() {
         .unwrap()
         .disable_harness("claude")
         .unwrap();
-    assert!(Store::open_ro(&resolution)
+    let harnesses = Store::open_ro(&resolution)
         .unwrap()
-        .enabled_harness_mappings()
-        .unwrap()
-        .is_empty());
+        .list_harnesses()
+        .unwrap();
+    let claude = harnesses.iter().find(|h| h.name == "claude").unwrap();
+    assert!(!claude.enabled);
+    assert_eq!(claude.mappings.len(), 2);
     Store::open_rw(&resolution)
         .unwrap()
         .enable_harness("claude")
         .unwrap();
-    assert_eq!(
-        Store::open_ro(&resolution)
-            .unwrap()
-            .enabled_harness_mappings()
-            .unwrap()
-            .len(),
-        2
-    );
+    let harnesses = Store::open_ro(&resolution)
+        .unwrap()
+        .list_harnesses()
+        .unwrap();
+    let claude = harnesses.iter().find(|h| h.name == "claude").unwrap();
+    assert!(claude.enabled);
+    assert_eq!(claude.mappings.len(), 2);
 
     let _ = fs::remove_dir_all(temp_dir);
 }

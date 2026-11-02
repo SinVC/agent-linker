@@ -1089,6 +1089,12 @@ fn v1_and_v2_migration_preserve_identifiers_relations_values_and_unix_times() {
             .unwrap(),
             manifest.links[0].item_name
         );
+        drop(c);
+        f.ok(&["unlink", "old-item"]);
+        assert!(agent_linker::core::manifest::load_manifest(&f.root)
+            .unwrap()
+            .links
+            .is_empty());
     }
 }
 

@@ -68,7 +68,9 @@ fn queries_are_readonly_even_while_another_writer_holds_the_database() {
     assert!(reader.list_group_summaries().unwrap().is_empty());
     assert_eq!(reader.list_harnesses().unwrap().len(), 1);
     assert_eq!(reader.list_all_mappings().unwrap().len(), 2);
-    assert_eq!(reader.enabled_harness_mappings().unwrap().len(), 2);
+    let harnesses = reader.list_harnesses().unwrap();
+    assert!(harnesses[0].enabled);
+    assert_eq!(harnesses[0].mappings.len(), 2);
     assert!(reader
         .list_items(crate::core::linkable::LinkableItemType::Skill)
         .unwrap()

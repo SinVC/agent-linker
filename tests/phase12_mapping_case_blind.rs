@@ -25,6 +25,9 @@ impl Fixture {
         fs::create_dir(&root).unwrap();
         Self(root)
     }
+    fn conn(&self) -> rusqlite::Connection {
+        rusqlite::Connection::open(self.0.join("data/agent-linker.db")).unwrap()
+    }
     fn store(&self) -> Store {
         let resolution = DbPathResolution {
             path: self.0.join("data/agent-linker.db"),
@@ -47,21 +50,19 @@ fn mapping(path: &str) -> AddHarnessMapping {
         link_kind: LinkKind::File,
     }
 }
-fn insert_historical(store: &Store, id: &str, path: &str, required: bool) {
-    store.connection().execute(
+fn insert_historical(db: &rusqlite::Connection, id: &str, path: &str, required: bool) {
+    db.execute(
         "INSERT INTO harness_mappings (id,harness_id,source_path,link_path,link_kind,required,created_at,updated_at) SELECT ?1,id,'AGENTS.md',?2,'file',?3,17,19 FROM harnesses WHERE name='claude'",
         rusqlite::params![id, path, required],
     ).unwrap();
 }
-fn row_exists(store: &Store, id: &str) -> bool {
-    store
-        .connection()
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM harness_mappings WHERE id=?1)",
-            [id],
-            |row| row.get(0),
-        )
-        .unwrap()
+fn row_exists(db: &rusqlite::Connection, id: &str) -> bool {
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM harness_mappings WHERE id=?1)",
+        [id],
+        |row| row.get(0),
+    )
+    .unwrap()
 }
 
 #[test]
@@ -75,7 +76,7 @@ fn ordinary_mapping_rejects_all_ascii_case_and_dot_equivalents() {
                 store.add_mapping(mapping(duplicate)).is_err(),
                 "accepted {duplicate} after {stored}"
             );
-            assert!(row_exists(&store, &added.id));
+            assert!(row_exists(&f.conn(), &added.id));
         }
     }
 }
@@ -88,7 +89,7 @@ fn ordinary_mapping_can_be_removed_by_ascii_case_and_dot_equivalents() {
         let added = store.add_mapping(mapping("GEMINI.md")).unwrap();
         let removed = store.remove_mapping("claude", Path::new(spelling)).unwrap();
         assert_eq!(removed.id, added.id, "wrong removal for {spelling}");
-        assert!(!row_exists(&store, &added.id));
+        assert!(!row_exists(&f.conn(), &added.id));
     }
 }
 
@@ -97,12 +98,12 @@ fn historical_dot_mapping_rejects_ascii_case_equivalent_additions() {
     for duplicate in ["gemini.md", "./gemini.md", "GeMiNi.MD", "./GeMiNi.MD"] {
         let f = Fixture::new();
         let store = f.store();
-        insert_historical(&store, "legacy", "./GEMINI.md", false);
+        insert_historical(&f.conn(), "legacy", "./GEMINI.md", false);
         assert!(
             store.add_mapping(mapping(duplicate)).is_err(),
             "accepted historical duplicate {duplicate}"
         );
-        assert!(row_exists(&store, "legacy"));
+        assert!(row_exists(&f.conn(), "legacy"));
     }
 }
 
@@ -111,12 +112,12 @@ fn historical_dot_mapping_can_be_removed_by_ascii_case_equivalents() {
     for spelling in ["gemini.md", "./gemini.md", "GeMiNi.MD", "./GeMiNi.MD"] {
         let f = Fixture::new();
         let store = f.store();
-        insert_historical(&store, "legacy", "./GEMINI.md", false);
+        insert_historical(&f.conn(), "legacy", "./GEMINI.md", false);
         let removed = store.remove_mapping("claude", Path::new(spelling)).unwrap();
         assert_eq!(removed.id, "legacy");
         assert_eq!(removed.created_at, 17);
         assert_eq!(removed.updated_at, 19);
-        assert!(!row_exists(&store, "legacy"));
+        assert!(!row_exists(&f.conn(), "legacy"));
     }
 }
 
@@ -128,8 +129,8 @@ fn exact_literal_record_wins_over_equivalent_historical_record() {
     ] {
         let f = Fixture::new();
         let store = f.store();
-        insert_historical(&store, "dot", "./GEMINI.md", false);
-        insert_historical(&store, "plain", "GEMINI.md", false);
+        insert_historical(&f.conn(), "dot", "./GEMINI.md", false);
+        insert_historical(&f.conn(), "plain", "GEMINI.md", false);
         assert_eq!(
             store
                 .remove_mapping("claude", Path::new(spelling))
@@ -137,8 +138,8 @@ fn exact_literal_record_wins_over_equivalent_historical_record() {
                 .id,
             expected
         );
-        assert!(!row_exists(&store, expected));
-        assert!(row_exists(&store, remaining));
+        assert!(!row_exists(&f.conn(), expected));
+        assert!(row_exists(&f.conn(), remaining));
     }
 }
 
@@ -148,8 +149,8 @@ fn required_records_are_protected_for_case_and_dot_variants() {
         let f = Fixture::new();
         let store = f.store();
         assert!(store.remove_mapping("claude", Path::new(spelling)).is_err());
-        let required_count: i64 = store
-            .connection()
+        let required_count: i64 = f
+            .conn()
             .query_row(
                 "SELECT COUNT(*) FROM harness_mappings WHERE link_path='CLAUDE.md' AND required=1",
                 [],
@@ -164,13 +165,13 @@ fn required_records_are_protected_for_case_and_dot_variants() {
 fn exact_required_record_is_not_bypassed_for_optional_equivalent() {
     let f = Fixture::new();
     let store = f.store();
-    insert_historical(&store, "required-dot", "./GEMINI.md", true);
-    insert_historical(&store, "optional-plain", "GEMINI.md", false);
+    insert_historical(&f.conn(), "required-dot", "./GEMINI.md", true);
+    insert_historical(&f.conn(), "optional-plain", "GEMINI.md", false);
     assert!(store
         .remove_mapping("claude", Path::new("./GEMINI.md"))
         .is_err());
-    assert!(row_exists(&store, "required-dot"));
-    assert!(row_exists(&store, "optional-plain"));
+    assert!(row_exists(&f.conn(), "required-dot"));
+    assert!(row_exists(&f.conn(), "optional-plain"));
     assert_eq!(
         store
             .remove_mapping("claude", Path::new("GEMINI.md"))
@@ -178,7 +179,7 @@ fn exact_required_record_is_not_bypassed_for_optional_equivalent() {
             .id,
         "optional-plain"
     );
-    assert!(row_exists(&store, "required-dot"));
+    assert!(row_exists(&f.conn(), "required-dot"));
 }
 
 #[cfg(unix)]
@@ -197,7 +198,7 @@ fn equivalence_matches_sqlite_nocase_without_unicode_case_folding() {
             .id,
         b.id
     );
-    assert!(row_exists(&store, &a.id));
+    assert!(row_exists(&f.conn(), &a.id));
 }
 
 #[cfg(windows)]
@@ -214,7 +215,7 @@ fn windows_managed_paths_keep_unicode_case_equivalence() {
             .id,
         added.id
     );
-    assert!(!row_exists(&store, &added.id));
+    assert!(!row_exists(&f.conn(), &added.id));
 }
 
 #[cfg(windows)]
@@ -254,7 +255,7 @@ fn unix_backslash_stays_a_filename_character() {
             .id,
         backslash.id
     );
-    assert!(row_exists(&store, &slash.id));
+    assert!(row_exists(&f.conn(), &slash.id));
     assert_eq!(
         store
             .remove_mapping("claude", Path::new("docs/gemini.md"))

@@ -7,7 +7,7 @@ use crate::{
     core::{
         manifest::LinkRecord,
         project_links::{CleanMode, StatusEntry, StatusReport},
-        symlink::{LinkKind, LinkStatus, SymlinkBackend},
+        symlink::{LinkKind, LinkStatus},
     },
 };
 use clap::{error::ErrorKind, CommandFactory, Parser};
@@ -43,7 +43,7 @@ fn harness_command_replaces_framework_in_parser_and_help() {
         let args = ["aglink", "harness"]
             .into_iter()
             .chain(subcommand.iter().copied());
-        let command = command_from_cli(Cli::try_parse_from(args).unwrap()).unwrap();
+        let command = command_from_cli(Cli::try_parse_from(args).unwrap());
         assert!(matches!(command, Command::Harness(_)));
     }
 
@@ -56,29 +56,14 @@ fn harness_command_replaces_framework_in_parser_and_help() {
 
 #[test]
 fn link_requires_item_or_group() {
-    let error = link_command(CliLinkArgs {
-        name: None,
-        group: None,
-        as_name: None,
-        target_dir: None,
-        dry_run: false,
-        force: false,
-    })
-    .unwrap_err();
-    assert!(error.to_string().contains("usage"));
+    let error = Cli::try_parse_from(["aglink", "link"]).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
 }
 
 #[test]
 fn link_group_rejects_item_only_flags() {
-    let error = link_command(CliLinkArgs {
-        name: None,
-        group: Some("daily".to_string()),
-        as_name: Some("writer".to_string()),
-        target_dir: None,
-        dry_run: false,
-        force: false,
-    })
-    .unwrap_err();
+    let error =
+        Cli::try_parse_from(["aglink", "link", "--group", "daily", "--as", "writer"]).unwrap_err();
     assert!(error.to_string().contains("--as"));
 }
 
@@ -91,8 +76,7 @@ fn link_item_preserves_dry_run_and_force() {
         target_dir: Some(PathBuf::from("docs")),
         dry_run: true,
         force: true,
-    })
-    .unwrap();
+    });
 
     assert!(matches!(
         command,
@@ -108,14 +92,9 @@ fn link_item_preserves_dry_run_and_force() {
 
 #[test]
 fn unlink_requires_exactly_one_target() {
-    let error = unlink_command(CliUnlinkArgs {
-        name: Some("writer".to_string()),
-        group: Some("daily".to_string()),
-        all: false,
-        dry_run: false,
-    })
-    .unwrap_err();
-    assert!(error.to_string().contains("usage"));
+    let error =
+        Cli::try_parse_from(["aglink", "unlink", "writer", "--group", "daily"]).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
 }
 
 #[test]
@@ -125,8 +104,7 @@ fn unlink_all_uses_none_identifier() {
         group: None,
         all: true,
         dry_run: true,
-    })
-    .unwrap();
+    });
 
     assert!(matches!(command.target, UnlinkTarget::Item(None)));
     assert!(command.options.dry_run);
@@ -134,20 +112,15 @@ fn unlink_all_uses_none_identifier() {
 
 #[test]
 fn clean_modes_are_exclusive() {
-    let error = clean_command(CliCleanArgs {
-        broken: true,
-        missing_source: true,
-        dry_run: false,
-    })
-    .unwrap_err();
-    assert!(error.to_string().contains("usage"));
+    let error =
+        Cli::try_parse_from(["aglink", "clean", "--broken", "--missing-source"]).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
 
     let command = clean_command(CliCleanArgs {
         broken: false,
         missing_source: true,
         dry_run: true,
-    })
-    .unwrap();
+    });
     assert_eq!(command.options.mode, CleanMode::MissingSource);
     assert!(command.options.dry_run);
 }
@@ -169,7 +142,7 @@ fn status_json_uses_structured_escaping() {
                     source_path: PathBuf::from("source\"path"),
                     link_path: PathBuf::from(".agents").join("skills").join("writer"),
                     link_kind: LinkKind::Directory,
-                    provider_backend: SymlinkBackend::Mock,
+                    provider_backend: "mock".into(),
                     created_by_command: "link".to_string(),
                     created_at: 1,
                     updated_at: 1,
@@ -197,4 +170,22 @@ fn status_json_uses_structured_escaping() {
     assert_eq!(value["links"][0]["id"], "id\"1");
     assert_eq!(value["links"][0]["item_name"], "writer\nskill");
     assert_eq!(value["links"][0]["status"], "missing");
+}
+
+#[test]
+fn both_group_command_spellings_normalize_to_identical_commands() {
+    for (first, second) in [
+        (
+            vec!["aglink", "link", "--group", "daily", "--dry-run", "--force"],
+            vec!["aglink", "group", "link", "daily", "--dry-run", "--force"],
+        ),
+        (
+            vec!["aglink", "unlink", "--group", "daily", "--dry-run"],
+            vec!["aglink", "group", "unlink", "daily", "--dry-run"],
+        ),
+    ] {
+        let first = command_from_cli(Cli::try_parse_from(first).unwrap());
+        let second = command_from_cli(Cli::try_parse_from(second).unwrap());
+        assert_eq!(format!("{first:?}"), format!("{second:?}"));
+    }
 }

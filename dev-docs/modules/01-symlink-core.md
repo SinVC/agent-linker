@@ -7,16 +7,16 @@
 ## 职责边界
 
 - 定义链接类型、链接状态、链接操作和结构化错误。
-- 封装 Unix、Windows Broker、Windows fallback 与外部 `ln` 兼容后端。
+- 封装 Unix、Windows Broker 与显式 Windows fallback 后端。
 - 维护链接创建的幂等和冲突语义。
 - 向上层返回结构化结果，不直接决定 CLI 文案。
+- `evaluate_create` / `evaluate_remove` 纯函数统一状态、source 有效性和 force 的判定；项目 Plan 与实际创建/删除共用规则，不在纯函数中执行 Provider 修改、目录创建或保存。
 
 ## 架构约束
 
 - Linux / macOS 默认使用 Rust 标准库创建 symlink。
 - Windows 默认使用 `WinSymlinksBroker` IPC 能力创建 symlink。
 - Windows 标准库 symlink 只能作为显式 fallback。
-- 外部 `ln` 只能作为调试或兼容后端，不作为核心默认路径。
 - fallback 后端必须显式配置或通过命令参数启用。
 
 ## Windows Broker 集成
@@ -34,6 +34,7 @@ Windows 默认 Provider 归 Symlink Core 所有，必须通过 `WinSymlinksBroke
 
 Symlink Provider 必须提供以下能力：
 
+- `validate_source(source, kind)`：校验创建所需的 source 与 kind，默认检查实际文件系统，测试 Provider 可使用自身条目；不修改链接。
 - `create_symlink(source, link, kind)`：创建指定类型的 symlink。
 - `replace_symlink(source, link, kind)`：校验新 source 和已有 symlink 后由 Provider 替换；上层不得先删除再创建。Unix Std 在 link 同目录创建临时 symlink，再以 `fs::rename` 原子覆盖；创建或 rename 失败保留旧链并清理本次临时链接。Windows 默认使用 Broker 原生替换，不新增后端或自动 fallback；显式 Std fallback 也采用同目录临时链接与 rename，系统不支持覆盖时返回错误并保留旧链。
 - `remove_symlink(link)`：删除 symlink。
@@ -69,6 +70,10 @@ Symlink Provider 必须提供以下能力：
 - `unsupported_platform`
 - `unsupported_link_kind`
 - `io`
+
+- `CreateSymlinkOptions` 仅含 `force` 字段，默认 false；不提供额外构造器或转换器。
+- `SymlinkError` 保留底层错误作为 `std::error::Error::source`，同时保留 source/link 路径、系统码和 Broker 稳定码。
+- Mock Provider 及专用辅助只在 `cfg(test)` 编译；Windows Broker 类型及完整实现只在 `cfg(windows)` 编译。历史后端名称只作为 Manifest 审计字符串保留。
 
 ## 关键决策
 

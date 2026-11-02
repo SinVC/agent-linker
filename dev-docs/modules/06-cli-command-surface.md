@@ -6,8 +6,9 @@
 
 ## 职责边界
 
-- CLI 层负责参数解析、调用 command 和格式化输出。
-- command 层负责业务编排。
+- CLI 层负责参数解析、调用 command 和格式化输出。Skill/Resource 共用子命令与转换，Resource add 保留必填 target-dir；互斥与必填由 clap 负责。
+- `group link/unlink` 和 `link/unlink --group` 解析后分别归一为相同 Command，用同一个分发入口。
+- command 层负责路径定位、默认 Provider/ProjectCtx 组装及一次 Store 打开，再调用 core 用例；status/普通 unlink/clean 不依赖全局库。
 - 底层存储、manifest 和 symlink 操作必须通过 core 能力完成。
 
 ## 架构约束
@@ -150,7 +151,7 @@ aglink doctor
 - Manifest 来源为 harness 或 item，旧 registry 哨兵兼容推断为 item；旧 scope 不再写出。`unlink --all` 只解绑 item，group unlink 按当前成员 item_id 选择其全部 item 链接，保留 Harness。
 - alias 不参与注册项标识符查询；rename 保留 item_id、已有项目 Manifest、路径和 source。`init` 的 gitignore 托管项为 `.claude/`、`.agents/`，保留块外内容。
 - 项目操作统一使用受控路径入口；`.agents` 或链接、相对 source 的已有父目录为 symlink 时失败，不访问其外部目标。
-- `doctor` 检查数据库、migration、manifest、Harness Adapter、Windows Broker 和 symlink 后端可用性。
+- `doctor` 由 `core/doctor.rs` 独立编排数据库、migration、manifest、Harness Adapter、Windows Broker 和 symlink 后端诊断。
 - 临时验证场景由 `aglink link <name>` 和后续可能的 `aglink link --local <path>` 承担，`--local` 暂不进入正式命令集。
 
 ## 验收口径
@@ -158,8 +159,8 @@ aglink doctor
 - 全局 Registry 命令不直接改变当前项目链接状态。
 - 当前项目链接命令必须写入或读取 `.agents/links.toml`。
 - `link`、`unlink`、`status`、`clean`、`doctor` 及 group 链接命令从当前目录向上定位最近的 `.agents/links.toml`，遇文件系统根或 symlink 目录停止；未找到时提示先运行 `init`。`init` 严格使用当前目录，不上查。
-- 用户输出默认简洁，`--verbose` 提供诊断信息，`--quiet` 只输出必要错误。
-- 成功操作输出创建、跳过或更新等摘要。
+- 用户输出默认简洁，`--verbose` 遍历错误 source 链并展示路径、系统码及 Broker 稳定码，首层原因与顶层错误文案完全相同时省略该重复行，继续展示后续原因；`--quiet` 保留必要错误。NotFound、Conflict、DatabaseBusy、PermissionDenied 和含路径的 Io 保持结构化分类。
+- 成功操作输出创建、跳过或更新等摘要。link/group link/unlink/group unlink/clean 共用 Plan → Validate → Execute；整批预检失败无目录/链接/清单副作用，dry-run 返回相同计划，成功后清单只原子保存一次。
 - 普通全局读写要求显式 db migrate，缺库/旧 schema 提示迁移，新 schema 提示升级。config 命令已移除，路径诊断使用 db path。
 - SQLite 写命令整体事务提交；group add/remove 输入按 item_id 去重，add 已有成员跳过并提示，未知项使整次事务失败。group list 只输出名称和成员数，show 保留完整成员。
 - db check 不建库/迁移/Seed，检查当前 schema 的五张核心表及 quick_check，行数不决定健康。Missing、SchemaMismatch、ReadOnly、LockedBusy、Invalid 返回非零，HealthyWritable 返回 0；Doctor 直接消费该状态。

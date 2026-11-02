@@ -8,11 +8,16 @@
 
 ## 代码入口
 
-- [TestDir](../../src/core/test_support.rs#L1)、[Symlink 单元/平台测试](../../src/core/symlink.rs#L1007)。
-- [Manifest 测试](../../src/core/manifest.rs#L674)、[Registry 测试](../../src/core/registry.rs#L747)、[项目用例测试](../../src/core/project_links.rs#L1208)。
-- 原 [存储迁移测试](../../src/core/store.rs)由 06/09 迁至 Store；[Doctor 原测试](../../src/core/project_links.rs#L1842)由 18 迁至 Doctor。
-- [CLI 测试](../../src/cli.rs#L1090)、[Windows 安装 fixture](../../packaging/windows/test-install.ps1#L1)、[Unix 安装 fixture](../../packaging/unix/test-install.sh#L1)。
-- [已发现的 Cargo 配置](../../Cargo.toml#L1)、[现有 release 验证命令](../../.github/workflows/release.yml#L36)。
+- [src/core/test_support.rs · `pub struct TestDir`](../../src/core/test_support.rs#L18)。
+- [tests/phase3_blind.rs · `#[test]`](../../tests/phase3_blind.rs#L117)。
+- [tests/phase3_review_closure_blind.rs · `fn real_broker_case_equivalent_group_dirs_and_dry_run`](../../tests/phase3_review_closure_blind.rs#L114)。
+- [src/core/doctor_tests.rs · `#[test]`](../../src/core/doctor_tests.rs#L20)。
+- [tests/phase12_closure_blind.rs · `#[test]`](../../tests/phase12_closure_blind.rs#L162)。
+- [tests/phase2_blind.rs · `#[test]`](../../tests/phase2_blind.rs#L117)。
+- [tests/fixtures/schema_v2.sql · `CREATE TABLE`](../../tests/fixtures/schema_v2.sql#L1)。
+- [packaging/windows/test-install.ps1 · `param`](../../packaging/windows/test-install.ps1#L3)。
+- [packaging/unix/test-install.sh · `#!/`](../../packaging/unix/test-install.sh#L1)。
+- [Cargo.toml · `[package]`](../../Cargo.toml#L1)。
 
 ## 必须闭合的故障场景
 
@@ -61,4 +66,4 @@
 
 ## 执行记录
 
-未执行。完成时填写各故障场景证据、平台结果与最终未验收项；全部满足后勾选 TODO 22。
+实现、验证结果和未解决问题统一记录于[阶段三进度 · 22](阶段三进度.md#步骤-22)。

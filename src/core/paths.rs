@@ -75,7 +75,7 @@ fn require_real_directory(path: &Path) -> Result<()> {
         }
         Ok(_) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
+        Err(error) => Err(Error::io(path, error)),
     }
 }
 
@@ -85,14 +85,14 @@ pub fn current_project_root() -> Result<PathBuf> {
 
 /// Find the nearest manifest, stopping before traversing a symlink directory.
 pub fn find_project_root(start: &Path) -> Result<PathBuf> {
-    let mut directory = std::path::absolute(start)?;
+    let mut directory = std::path::absolute(start).map_err(|error| Error::io(start, error))?;
     loop {
         require_real_directory(&directory)?;
         let manifest = resolve_managed_project_path(&directory, Path::new(".agents/links.toml"))?;
         match fs::symlink_metadata(&manifest) {
             Ok(_) => return Ok(normalize_windows_path(&directory)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(Error::io(&manifest, error)),
         }
         if !directory.pop() {
             return Err(Error::project(format!(
@@ -328,8 +328,8 @@ fn home_from_environment() -> Option<PathBuf> {
     }
 }
 
-fn path_error(path: &Path, error: impl std::fmt::Display) -> Error {
-    Error::database(format!("{}: {error}", path.display()))
+fn path_error(path: &Path, error: impl Into<Error>) -> Error {
+    error.into().at_path(path)
 }
 
 fn path_metadata(path: &Path) -> Result<Option<fs::Metadata>> {

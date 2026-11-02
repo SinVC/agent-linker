@@ -86,12 +86,7 @@ pub fn validate_skill_source(source_path: &Path) -> Result<ValidatedSource> {
     }
 
     let skill_md = source.absolute_path.join("SKILL.md");
-    let content = fs::read_to_string(&skill_md).map_err(|error| {
-        Error::invalid_arguments(format!(
-            "skill source must contain readable SKILL.md at {}: {error}",
-            skill_md.display()
-        ))
-    })?;
+    let content = fs::read_to_string(&skill_md).map_err(|error| Error::io(&skill_md, error))?;
 
     if content.trim().is_empty() {
         return Err(Error::invalid_arguments(format!(
@@ -148,14 +143,11 @@ pub fn validate_project_relative_target_dir(target_dir: &Path) -> Result<()> {
 }
 
 fn validate_source_path(source_path: &Path) -> Result<ValidatedSource> {
-    let absolute_path = fs::canonicalize(source_path).map_err(|error| {
-        Error::invalid_arguments(format!(
-            "source path is not readable or does not exist: {}; {error}",
-            source_path.display()
-        ))
-    })?;
+    let absolute_path =
+        fs::canonicalize(source_path).map_err(|error| Error::io(source_path, error))?;
     let absolute_path = normalize_windows_path(&absolute_path);
-    let metadata = fs::metadata(&absolute_path)?;
+    let metadata =
+        fs::metadata(&absolute_path).map_err(|error| Error::io(&absolute_path, error))?;
     let source_kind = if metadata.is_file() {
         LinkKind::File
     } else if metadata.is_dir() {

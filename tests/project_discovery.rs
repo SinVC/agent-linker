@@ -5,7 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-struct Project(PathBuf);
+struct Project(PathBuf, Vec<u8>);
 
 impl Project {
     fn new() -> Self {
@@ -18,8 +18,13 @@ impl Project {
                 .as_nanos()
         ));
         fs::create_dir_all(path.join(".agents")).unwrap();
-        fs::write(path.join(".agents/links.toml"), "schema_version = 1\n").unwrap();
-        Self(path)
+        agent_linker::core::manifest::save_manifest(
+            &path,
+            &agent_linker::core::manifest::Manifest::empty(),
+        )
+        .unwrap();
+        let original = fs::read(path.join(".agents/links.toml")).unwrap();
+        Self(path, original)
     }
 
     fn run(&self, cwd: &Path, args: &[&str]) -> Output {
@@ -96,8 +101,8 @@ fn project_commands_use_the_parent_manifest_from_the_actual_working_directory() 
     assert!(!child.join(".agents").exists());
     assert!(!project.0.join("assets").exists());
     assert_eq!(
-        fs::read_to_string(project.0.join(".agents/links.toml")).unwrap(),
-        "schema_version = 1\n"
+        fs::read(project.0.join(".agents/links.toml")).unwrap(),
+        project.1
     );
 }
 
@@ -114,8 +119,8 @@ fn init_stays_in_the_actual_working_directory() {
     assert!(child.join(".agents/skills").is_dir());
     assert!(!project.0.join("AGENTS.md").exists());
     assert_eq!(
-        fs::read_to_string(project.0.join(".agents/links.toml")).unwrap(),
-        "schema_version = 1\n"
+        fs::read(project.0.join(".agents/links.toml")).unwrap(),
+        project.1
     );
     assert_eq!(
         fs::read_to_string(child.join("CLAUDE.md")).unwrap(),

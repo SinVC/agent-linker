@@ -1,3 +1,4 @@
+pub mod doctor;
 pub mod error;
 pub mod harness;
 pub mod linkable;

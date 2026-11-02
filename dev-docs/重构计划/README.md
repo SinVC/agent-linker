@@ -31,14 +31,16 @@
 
 ## 阶段三：执行链路与模块收敛
 
-- [ ] 14 [Manifest 改用 serde + toml 与后端审计兼容](14-manifest-toml.md)
-- [ ] 15 [共享 Symlink 判定与选项收敛](15-symlink-rules.md)
-- [ ] 16 [共享 LinkPlan 与一次执行提交](16-link-plan.md)
-- [ ] 17 [ProjectCtx 与命令层组装](17-project-context.md)
-- [ ] 18 [拆出 Doctor 模块](18-doctor.md)
-- [ ] 19 [结构化错误与 verbose 错误链](19-errors.md)
-- [ ] 20 [CLI 公共结构与命令归一](20-cli.md)
-- [ ] 21 [测试、平台代码隔离与剩余死代码删除](21-code-cleanup.md)
-- [ ] 22 [裁决覆盖核对与故障回归验收](22-verification.md)
+14—22 已完成并通过 Windows、原生 Broker 专项与 WSL Ubuntu 回归；进度、验证结果与未解决问题见[阶段三进度](阶段三进度.md)。
+
+- [x] 14 [Manifest 改用 serde + toml 与后端审计兼容](14-manifest-toml.md)
+- [x] 15 [共享 Symlink 判定与选项收敛](15-symlink-rules.md)
+- [x] 16 [共享 LinkPlan 与一次执行提交](16-link-plan.md)
+- [x] 17 [ProjectCtx 与命令层组装](17-project-context.md)
+- [x] 18 [拆出 Doctor 模块](18-doctor.md)
+- [x] 19 [结构化错误与 verbose 错误链](19-errors.md)
+- [x] 20 [CLI 公共结构与命令归一](20-cli.md)
+- [x] 21 [测试、平台代码隔离与剩余死代码删除](21-code-cleanup.md)
+- [x] 22 [裁决覆盖核对与故障回归验收](22-verification.md)
 
 P0-2 的查询误选在 05 修复，数据库唯一性在 09 完成；P0-5 分别由 03、06、07、16 闭合。08 先移除 config 消费入口，09 再删除表；14、15、16、17 分别处理序列化、判定、执行计划和上下文，避免同一步混做这些重构。

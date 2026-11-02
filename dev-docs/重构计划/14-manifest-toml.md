@@ -8,10 +8,11 @@
 
 ## 代码入口
 
-- [Cargo.toml](../../Cargo.toml#L13)、[Cargo.lock](../../Cargo.lock)。
-- [Manifest/LinkRecord](../../src/core/manifest.rs#L27)、[serialize_manifest](../../src/core/manifest.rs#L428)、[parse_manifest](../../src/core/manifest.rs#L466)。
-- [手写字段/字符串解析](../../src/core/manifest.rs#L529)、[parse_backend](../../src/core/manifest.rs#L593)、[转义器](../../src/core/manifest.rs#L627)。
-- [SymlinkBackend 与 Display](../../src/core/symlink.rs#L57)、[既有清单兼容测试](../../src/core/manifest.rs#L690)。
+- [Cargo.toml · `[dependencies]`](../../Cargo.toml#L12)。
+- [src/core/manifest.rs · `pub struct LinkRecord`](../../src/core/manifest.rs#L42)。
+- [src/core/manifest.rs · `fn serialize_manifest`](../../src/core/manifest.rs#L508)。
+- [src/core/manifest.rs · `struct StoredLinkRecord`](../../src/core/manifest.rs#L520)。
+- [src/core/manifest.rs · `fn deserialize_timestamp`](../../src/core/manifest.rs#L571)。
 
 ## 修改清单
 
@@ -19,7 +20,7 @@
 2. serde 数据读取保留必要旧字段兼容：旧 framework_name 的 Harness/item 来源映射、旧 scope 的接受、已有路径/ID/时间的读取。02 已确定的新记录写出规则保持不变，validate 继续承担业务合法性检查。
 3. provider_backend 作为审计字符串宽容解析，例如以 `Unknown(String)` 保留未知原值；包括历史 `external-ln` 在内的旧名称不能阻止状态读取、clean 或 unlink。真实 Provider 选择仍只使用实现的后端，不把未知审计值当成可执行后端。
 4. 调整因审计值不再是固定 Copy 枚举而必须修改的字段消费点；保留 status/report 对后端字符串的展示。
-5. 路径保持当前契约：绝对 source 的本机分隔符往返正确，项目相对 link_path 采用一致的相对表示。继续通过 01 安全入口与 03 原子保存，不在此步重新实现文件写入。
+5. 路径保持当前契约：绝对 source 的本机分隔符往返正确，项目相对 link_path 采用一致的相对表示，新计算的链接路径剥离 `.` 组件。继续通过 01 安全入口与 03 原子保存，不在此步重新实现文件写入。
 6. 同步模块 02 的序列化与历史后端兼容说明。
 
 ## 验收
@@ -31,4 +32,4 @@
 
 ## 执行记录
 
-未执行。完成时填写删除的手写解析、兼容样例和验证结果，再勾选 TODO 14。
+实现、验证结果和未解决问题统一记录于[阶段三进度 · 14](阶段三进度.md#步骤-14)。

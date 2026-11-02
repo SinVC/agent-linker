@@ -8,10 +8,11 @@
 
 ## 代码入口
 
-- [CliSkillCommand](../../src/cli.rs#L146)、[CliResourceCommand](../../src/cli.rs#L171)、[skill_command/resource_command](../../src/cli.rs#L413)。
-- [CliGroupCommand](../../src/cli.rs#L198)、[group_command](../../src/cli.rs#L450)、[link_command/unlink_command/clean_command](../../src/cli.rs#L474)。
-- [GroupCommand](../../src/commands/mod.rs#L109)、[LinkCommand/UnlinkTarget](../../src/commands/mod.rs#L143)、[run_group/run_link/run_unlink](../../src/commands/mod.rs#L398)。
-- [现有 clap 解析测试](../../src/cli.rs#L1141)。
+- [src/cli.rs · `enum CliItemCommand`](../../src/cli.rs#L133)。
+- [src/cli.rs · `struct CliResourceAddArgs`](../../src/cli.rs#L155)。
+- [src/cli.rs · `fn group_command`](../../src/cli.rs#L401)。
+- [src/cli.rs · `struct CliLinkArgs`](../../src/cli.rs#L227)。
+- [src/commands/mod.rs · `pub enum LinkCommand`](../../src/commands/mod.rs#L105)。
 
 ## 修改清单
 
@@ -30,4 +31,4 @@
 
 ## 执行记录
 
-未执行。完成时填写归一后的 Command、删除分支和验证结果，再勾选 TODO 20。
+实现、验证结果和未解决问题统一记录于[阶段三进度 · 20](阶段三进度.md#步骤-20)。

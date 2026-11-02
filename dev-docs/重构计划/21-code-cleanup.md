@@ -8,11 +8,11 @@
 
 ## 代码入口
 
-- [MockEntry/MockSymlinkProvider](../../src/core/symlink.rs#L540)及全部 impl、辅助结构与专用 imports。
-- [WindowsBrokerSymlinkProvider](../../src/core/symlink.rs#L405)、[impl 与非 Windows 桩](../../src/core/symlink.rs#L413)、[默认 Provider](../../src/core/symlink.rs#L346)。
-- [SymlinkBackend::ExternalLn](../../src/core/symlink.rs#L57)、[LinkStatus::is_existing_real_path](../../src/core/symlink.rs#L88)。
-- [commands 架构源码字符串测试](../../src/commands/mod.rs#L493)、[core 模块可见性](../../src/core/mod.rs#L1)。
-- [已清理字段原位置](../../src/core/linkable.rs#L35)、[已清理错误原位置](../../src/core/error.rs#L8)、[已清理 bool 原位置](../../src/core/util.rs#L3)。
+- [src/core/symlink.rs · `pub enum MockEntry`](../../src/core/symlink.rs#L537)。
+- [src/core/symlink.rs · `pub struct WindowsBrokerSymlinkProvider`](../../src/core/symlink.rs#L432)。
+- [src/core/symlink.rs · `pub enum SymlinkBackend`](../../src/core/symlink.rs#L62)。
+- [src/core/store.rs · `pub(super) fn connection(`](../../src/core/store.rs#L84)。
+- [src/core/mod.rs · `pub mod doctor;`](../../src/core/mod.rs#L1)。
 
 ## 修改清单
 
@@ -20,7 +20,7 @@
 2. WindowsBrokerSymlinkProvider 的类型和整体实现统一 `#[cfg(windows)]`；删除非 Windows 平台四个仅返回“不支持”的桩方法，更新跨平台 imports 和测试条件编译。
 3. 删除运行时 `SymlinkBackend::ExternalLn` 和 `LinkStatus::is_existing_real_path`。历史 external-ln 审计字符串继续由 14 的宽容读取保留，不恢复为执行后端。
 4. 删除 commands 末尾 `include_str!("mod.rs")` 搜源码的架构自检测试，以 Rust 可见性约束入口：用例 API 按需收敛为 `pub(crate)`，底层连接和内部实现只在所需 core 范围可见；commands 继续只能经 core API 访问存储、清单和 Provider。
-5. 核对前序已删除内容：config、SourceType/SourceOwnership、死列、scope、NotImplemented、bool 转换、冗余 CreateSymlinkOptions 转换与旧重载均无运行时消费者残留。
+5. 核对前序已删除内容：config、SourceType/SourceOwnership、死列、scope、NotImplemented、bool 转换、冗余 CreateSymlinkOptions 转换与旧重载均无运行时消费者残留。删除无生产消费者的 Store::enabled_harness_mappings，相关测试继续通过现有 Harness 查询验证启用状态与映射。
 6. 同步模块 01、07，移除外部 ln 执行后端、预留 source ownership 和旧测试架构描述，不增加新的扩展机制。
 
 ## 验收
@@ -32,4 +32,4 @@
 
 ## 执行记录
 
-未执行。完成时填写条件编译范围、可见性变化、删除内容和平台结果，再勾选 TODO 21。
+实现、验证结果和未解决问题统一记录于[阶段三进度 · 21](阶段三进度.md#步骤-21)。

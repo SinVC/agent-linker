@@ -8,19 +8,20 @@
 
 ## 代码入口
 
-- [单项 link](../../src/core/project_links.rs#L220)、[group link 循环](../../src/core/project_links.rs#L324)。
-- [unlink](../../src/core/project_links.rs#L416)、[group unlink](../../src/core/project_links.rs#L463)、[unlink_selected_indexes](../../src/core/project_links.rs#L804)。
-- [clean](../../src/core/project_links.rs#L503)、[父目录准备](../../src/core/project_links.rs#L1054)、[record 构造](../../src/core/project_links.rs#L1121)。
-- [save_manifest](../../src/core/manifest.rs#L216)，03 后为原子保存；15 后的 `evaluate_create/evaluate_remove` 位于 Symlink Core。
+- [src/core/project_links.rs · `struct LinkPlan`](../../src/core/project_links.rs#L130)。
+- [src/core/project_links.rs · `pub fn link_group`](../../src/core/project_links.rs#L327)。
+- [src/core/project_links.rs · `fn execute_unlink`](../../src/core/project_links.rs#L405)。
+- [src/core/project_links.rs · `pub fn clean`](../../src/core/project_links.rs#L426)。
+- [src/core/manifest.rs · `pub fn save_manifest`](../../src/core/manifest.rs#L262)。
 
 ## 修改清单
 
 1. 在 project_links 定义共享 LinkPlan，表达本次全部目标路径变更、缺失父目录和最终 Manifest 变化；只承载上述现有操作，不设计通用任务系统。
 2. Plan 阶段只读取一次当前 Manifest，取得本次所需条目/成员，在内存计算完整变更集；group link 不再逐成员调用会立即落盘的单项函数。
-3. Validate 阶段对整个变更集统一执行：受控路径解析、source/kind、已有 Manifest 路径占用、组内目标互冲、磁盘状态和 15 的共享规则。组内规划状态同时考虑尚未落盘的目标，不能只检查当前磁盘。
+3. Validate 阶段对整个变更集统一执行：受控路径解析、source/kind、已有 Manifest 路径占用、组内目标互冲、磁盘状态和 15 的共享规则。组内规划状态同时考虑尚未落盘的目标，不能只检查当前磁盘。同一 item 来源、item_id 和受控路径键命中旧记录时复用原 ID 与 created_at；其他来源或 item_id 占用同一路径仍报冲突。
 4. `--dry-run` 在相同 Plan 完成校验后直接返回计划结果，不建立第二套模拟状态机，不创建父目录、不变更 symlink、不保存清单。
 5. 校验全部通过后再按 Plan 创建缺失父目录、调用 Provider 执行链接变更，最后通过 03 保存一次最终 Manifest。unlink/clean 使用同一流程组织删除与 missing 记录移除，保留已有选择语义。
-6. 报告由同一 Plan/执行结果生成，保留 created_dirs、创建/跳过/替换/删除结果以及 dry_run 标记；必要调用点调整限于该执行流程。
+6. 报告由同一 Plan/执行结果生成，保留 created_dirs、创建/跳过/替换/删除结果以及 dry_run 标记；待建父目录和 created_dirs 按 managed_relative_path_key 去重，保留首次规划的路径拼写；必要调用点调整限于该执行流程。
 7. 同步模块 02、06、07 的批量预检、dry-run 与一次保存契约。不得把一次原子 Manifest 保存描述为 SQLite 与文件系统的统一事务。
 
 ## 验收
@@ -34,4 +35,4 @@
 
 ## 执行记录
 
-未执行。完成时填写 Plan 覆盖的操作、冲突/保存观测和验证结果，再勾选 TODO 16。
+实现、验证结果和未解决问题统一记录于[阶段三进度 · 16](阶段三进度.md#步骤-16)。

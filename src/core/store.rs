@@ -81,10 +81,10 @@ impl Store {
         require_latest(&connection, &resolution.path)?;
         Ok(Self { connection })
     }
-    pub fn connection(&self) -> &Connection {
+    pub(super) fn connection(&self) -> &Connection {
         &self.connection
     }
-    pub(crate) fn write<T>(
+    pub(super) fn write<T>(
         &self,
         operation: impl FnOnce(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
@@ -291,8 +291,8 @@ pub fn backup_database(
     })
 }
 
-fn path_error(path: &Path, error: impl std::fmt::Display) -> Error {
-    Error::database(format!("{}: {error}", path.display()))
+fn path_error(path: &Path, error: impl Into<Error>) -> Error {
+    error.into().at_path(path)
 }
 
 fn path_metadata(path: &Path) -> Result<Option<fs::Metadata>> {
@@ -522,14 +522,33 @@ fn default_backup_path(resolution: &DbPathResolution) -> PathBuf {
 }
 
 impl From<rusqlite::Error> for Error {
-    fn from(error: rusqlite::Error) -> Self {
-        if matches!(&error,rusqlite::Error::SqliteFailure(code,_) if code.extended_code==rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE)
-        {
-            return Error::invalid_arguments(format!(
-                "name or default link destination already exists: {error}"
-            ));
+    fn from(source: rusqlite::Error) -> Self {
+        if let rusqlite::Error::SqliteFailure(code, _) = &source {
+            match code.code {
+                rusqlite::ErrorCode::ConstraintViolation
+                    if code.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE =>
+                {
+                    return Self::Conflict {
+                        message: format!(
+                            "name or default link destination already exists: {source}"
+                        ),
+                        path: None,
+                        source: Some(source),
+                    }
+                }
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked => {
+                    return Self::DatabaseBusy { path: None, source }
+                }
+                rusqlite::ErrorCode::PermissionDenied | rusqlite::ErrorCode::ReadOnly => {
+                    return Self::PermissionDenied {
+                        path: None,
+                        source: Box::new(source),
+                    }
+                }
+                _ => {}
+            }
         }
-        Error::database(error.to_string())
+        Self::Database { path: None, source }
     }
 }
 #[cfg(test)]

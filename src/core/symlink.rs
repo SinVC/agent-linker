@@ -1,7 +1,10 @@
 //! Symlink provider and link status entry point.
 
+use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use std::collections::BTreeMap;
+
 use std::{
-    collections::BTreeMap,
     error, fmt, fs, io,
     path::{Path, PathBuf},
     str::FromStr,
@@ -15,9 +18,11 @@ use win_symlinks_client::{
 
 pub type SymlinkResult<T> = std::result::Result<T, SymlinkError>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum LinkKind {
     File,
+    #[serde(alias = "dir")]
     Directory,
 }
 
@@ -58,7 +63,6 @@ pub enum SymlinkBackend {
     Std,
     WindowsBroker,
     WindowsStdFallback,
-    ExternalLn,
     Mock,
 }
 
@@ -68,7 +72,6 @@ impl fmt::Display for SymlinkBackend {
             SymlinkBackend::Std => write!(formatter, "std"),
             SymlinkBackend::WindowsBroker => write!(formatter, "windows-broker"),
             SymlinkBackend::WindowsStdFallback => write!(formatter, "windows-std-fallback"),
-            SymlinkBackend::ExternalLn => write!(formatter, "external-ln"),
             SymlinkBackend::Mock => write!(formatter, "mock"),
         }
     }
@@ -83,15 +86,6 @@ pub enum LinkStatus {
     ExistingRealFile,
     ExistingRealDirectory,
     UnsupportedFileType { path: PathBuf },
-}
-
-impl LinkStatus {
-    pub fn is_existing_real_path(&self) -> bool {
-        matches!(
-            self,
-            LinkStatus::ExistingRealFile | LinkStatus::ExistingRealDirectory
-        )
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,7 +123,7 @@ impl fmt::Display for SymlinkErrorKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct SymlinkError {
     kind: SymlinkErrorKind,
     backend: SymlinkBackend,
@@ -138,6 +132,7 @@ pub struct SymlinkError {
     detail: Option<String>,
     system_code: Option<i32>,
     broker_code: Option<String>,
+    cause: Option<Box<dyn error::Error + Send + Sync>>,
 }
 
 impl SymlinkError {
@@ -150,7 +145,13 @@ impl SymlinkError {
             detail: None,
             system_code: None,
             broker_code: None,
+            cause: None,
         }
+    }
+
+    pub fn with_cause(mut self, source: impl error::Error + Send + Sync + 'static) -> Self {
+        self.cause = Some(Box::new(source));
+        self
     }
 
     pub fn kind(&self) -> SymlinkErrorKind {
@@ -235,27 +236,17 @@ impl fmt::Display for SymlinkError {
     }
 }
 
-impl error::Error for SymlinkError {}
+impl error::Error for SymlinkError {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        self.cause
+            .as_ref()
+            .map(|source| source.as_ref() as &dyn error::Error)
+    }
+}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CreateSymlinkOptions {
     pub force: bool,
-}
-
-impl CreateSymlinkOptions {
-    pub const fn new() -> Self {
-        Self { force: false }
-    }
-
-    pub const fn force_wrong_symlink() -> Self {
-        Self { force: true }
-    }
-}
-
-impl Default for CreateSymlinkOptions {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -272,6 +263,10 @@ pub enum RemoveSymlinkOutcome {
 }
 
 pub trait SymlinkProvider {
+    fn validate_source(&self, source: &Path, kind: LinkKind) -> SymlinkResult<()> {
+        validate_source(source, kind, self.backend())
+    }
+
     fn backend(&self) -> SymlinkBackend;
 
     fn create_symlink(&mut self, source: &Path, link: &Path, kind: LinkKind) -> SymlinkResult<()>;
@@ -294,60 +289,77 @@ pub fn ensure_symlink(
     kind: LinkKind,
     options: CreateSymlinkOptions,
 ) -> SymlinkResult<CreateSymlinkOutcome> {
-    match provider.link_status(source, link, kind)? {
-        LinkStatus::Missing => {
-            provider.create_symlink(source, link, kind)?;
-            Ok(CreateSymlinkOutcome::Created)
+    let status = provider.link_status(source, link, kind)?;
+    provider.validate_source(source, kind)?;
+    let outcome = evaluate_create(&status, true, source, link, provider.backend(), options)?;
+    match outcome {
+        CreateSymlinkOutcome::Created => provider.create_symlink(source, link, kind)?,
+        CreateSymlinkOutcome::ReplacedWrongSymlink => {
+            provider.replace_symlink(source, link, kind)?
         }
-        LinkStatus::CorrectSymlink { .. } => Ok(CreateSymlinkOutcome::AlreadyCorrect),
-        LinkStatus::WrongSymlinkTarget { actual, expected } => {
-            if !options.force {
-                return Err(SymlinkError::new(
-                    SymlinkErrorKind::WrongSymlinkTarget,
-                    provider.backend(),
-                )
-                .with_source(expected)
-                .with_link(link)
-                .with_detail(format!("existing link points to {}", actual.display())));
-            }
-
-            provider.replace_symlink(source, link, kind)?;
-            Ok(CreateSymlinkOutcome::ReplacedWrongSymlink)
-        }
-        LinkStatus::BrokenSymlink { .. } if options.force => {
-            provider.replace_symlink(source, link, kind)?;
-            Ok(CreateSymlinkOutcome::ReplacedWrongSymlink)
-        }
-        LinkStatus::BrokenSymlink { target } => Err(SymlinkError::new(
-            SymlinkErrorKind::SourceNotFound,
-            provider.backend(),
-        )
-        .with_source(source)
-        .with_link(link)
-        .with_detail(format!(
-            "existing symlink points to missing source {}",
-            target.display()
-        ))),
-        LinkStatus::ExistingRealFile => Err(SymlinkError::new(
-            SymlinkErrorKind::ExistingRealFile,
-            provider.backend(),
-        )
-        .with_source(source)
-        .with_link(link)),
-        LinkStatus::ExistingRealDirectory => Err(SymlinkError::new(
-            SymlinkErrorKind::ExistingRealDirectory,
-            provider.backend(),
-        )
-        .with_source(source)
-        .with_link(link)),
-        LinkStatus::UnsupportedFileType { path } => Err(SymlinkError::new(
-            SymlinkErrorKind::UnsupportedLinkKind,
-            provider.backend(),
-        )
-        .with_source(source)
-        .with_link(link)
-        .with_detail(format!("unsupported file type at {}", path.display()))),
+        CreateSymlinkOutcome::AlreadyCorrect => {}
     }
+    Ok(outcome)
+}
+
+pub fn evaluate_create(
+    status: &LinkStatus,
+    source_valid: bool,
+    source: &Path,
+    link: &Path,
+    backend: SymlinkBackend,
+    options: CreateSymlinkOptions,
+) -> SymlinkResult<CreateSymlinkOutcome> {
+    if !source_valid {
+        return Err(SymlinkError::new(SymlinkErrorKind::SourceNotFound, backend)
+            .with_source(source)
+            .with_link(link));
+    }
+    match status {
+        LinkStatus::Missing => Ok(CreateSymlinkOutcome::Created),
+        LinkStatus::CorrectSymlink { .. } => Ok(CreateSymlinkOutcome::AlreadyCorrect),
+        LinkStatus::WrongSymlinkTarget { .. } | LinkStatus::BrokenSymlink { .. }
+            if options.force =>
+        {
+            Ok(CreateSymlinkOutcome::ReplacedWrongSymlink)
+        }
+        LinkStatus::WrongSymlinkTarget { actual, expected } => Err(SymlinkError::new(
+            SymlinkErrorKind::WrongSymlinkTarget,
+            backend,
+        )
+        .with_source(expected)
+        .with_link(link)
+        .with_detail(format!("existing link points to {}", actual.display()))),
+        LinkStatus::BrokenSymlink { target } => {
+            Err(SymlinkError::new(SymlinkErrorKind::SourceNotFound, backend)
+                .with_source(source)
+                .with_link(link)
+                .with_detail(format!(
+                    "existing symlink points to missing source {}",
+                    target.display()
+                )))
+        }
+        _ => evaluate_remove(status, link, backend)
+            .map(|_| CreateSymlinkOutcome::Created)
+            .map_err(|error| error.with_source(source)),
+    }
+}
+
+pub fn evaluate_remove(
+    status: &LinkStatus,
+    link: &Path,
+    backend: SymlinkBackend,
+) -> SymlinkResult<RemoveSymlinkOutcome> {
+    let kind = match status {
+        LinkStatus::Missing => return Ok(RemoveSymlinkOutcome::Missing),
+        LinkStatus::CorrectSymlink { .. }
+        | LinkStatus::WrongSymlinkTarget { .. }
+        | LinkStatus::BrokenSymlink { .. } => return Ok(RemoveSymlinkOutcome::Removed),
+        LinkStatus::ExistingRealFile => SymlinkErrorKind::ExistingRealFile,
+        LinkStatus::ExistingRealDirectory => SymlinkErrorKind::ExistingRealDirectory,
+        LinkStatus::UnsupportedFileType { .. } => SymlinkErrorKind::UnsupportedLinkKind,
+    };
+    Err(SymlinkError::new(kind, backend).with_link(link))
 }
 
 pub fn default_provider() -> Box<dyn SymlinkProvider> {
@@ -415,15 +427,18 @@ impl SymlinkProvider for StdSymlinkProvider {
     }
 }
 
+#[cfg(windows)]
 #[derive(Debug, Clone, Default)]
 pub struct WindowsBrokerSymlinkProvider;
 
+#[cfg(windows)]
 impl WindowsBrokerSymlinkProvider {
     pub const fn new() -> Self {
         Self
     }
 }
 
+#[cfg(windows)]
 impl SymlinkProvider for WindowsBrokerSymlinkProvider {
     fn backend(&self) -> SymlinkBackend {
         SymlinkBackend::WindowsBroker
@@ -438,58 +453,19 @@ impl SymlinkProvider for WindowsBrokerSymlinkProvider {
     }
 
     fn remove_symlink(&mut self, link: &Path) -> SymlinkResult<RemoveSymlinkOutcome> {
-        #[cfg(windows)]
-        {
-            remove_fs_symlink(link, SymlinkBackend::WindowsBroker)
-        }
-
-        #[cfg(not(windows))]
-        {
-            Err(SymlinkError::new(
-                SymlinkErrorKind::UnsupportedPlatform,
-                SymlinkBackend::WindowsBroker,
-            )
-            .with_link(link)
-            .with_detail("Windows Broker provider is only available on Windows"))
-        }
+        remove_fs_symlink(link, SymlinkBackend::WindowsBroker)
     }
 
     fn read_link(&self, link: &Path) -> SymlinkResult<PathBuf> {
-        #[cfg(windows)]
-        {
-            read_fs_link(link, SymlinkBackend::WindowsBroker)
-        }
-
-        #[cfg(not(windows))]
-        {
-            Err(SymlinkError::new(
-                SymlinkErrorKind::UnsupportedPlatform,
-                SymlinkBackend::WindowsBroker,
-            )
-            .with_link(link)
-            .with_detail("Windows Broker provider is only available on Windows"))
-        }
+        read_fs_link(link, SymlinkBackend::WindowsBroker)
     }
 
     fn link_status(&self, source: &Path, link: &Path, kind: LinkKind) -> SymlinkResult<LinkStatus> {
-        #[cfg(windows)]
-        {
-            fs_link_status(source, link, kind, SymlinkBackend::WindowsBroker)
-        }
-
-        #[cfg(not(windows))]
-        {
-            let _ = (source, kind);
-            Err(SymlinkError::new(
-                SymlinkErrorKind::UnsupportedPlatform,
-                SymlinkBackend::WindowsBroker,
-            )
-            .with_link(link)
-            .with_detail("Windows Broker provider is only available on Windows"))
-        }
+        fs_link_status(source, link, kind, SymlinkBackend::WindowsBroker)
     }
 }
 
+#[cfg(windows)]
 impl WindowsBrokerSymlinkProvider {
     fn write_symlink(
         &mut self,
@@ -498,38 +474,23 @@ impl WindowsBrokerSymlinkProvider {
         kind: LinkKind,
         replace: bool,
     ) -> SymlinkResult<()> {
-        #[cfg(windows)]
-        {
-            validate_source(source, kind, SymlinkBackend::WindowsBroker)?;
-            validate_link_parent(link, SymlinkBackend::WindowsBroker)?;
-            if replace {
-                require_fs_symlink(link, SymlinkBackend::WindowsBroker)?;
-            } else {
-                reject_existing_link_path(link, SymlinkBackend::WindowsBroker)?;
-            }
-
-            let options = BrokerCreateSymlinkOptions::new(source, link)
-                .target_kind(broker_target_kind(kind))
-                .replace_existing_symlink(replace);
-
-            create_symlink_via_broker(options).map_err(|error| {
-                broker_error_to_symlink_error(error)
-                    .with_source(source)
-                    .with_link(link)
-            })
+        validate_source(source, kind, SymlinkBackend::WindowsBroker)?;
+        validate_link_parent(link, SymlinkBackend::WindowsBroker)?;
+        if replace {
+            require_fs_symlink(link, SymlinkBackend::WindowsBroker)?;
+        } else {
+            reject_existing_link_path(link, SymlinkBackend::WindowsBroker)?;
         }
 
-        #[cfg(not(windows))]
-        {
-            let _ = (kind, replace);
-            Err(SymlinkError::new(
-                SymlinkErrorKind::UnsupportedPlatform,
-                SymlinkBackend::WindowsBroker,
-            )
-            .with_source(source)
-            .with_link(link)
-            .with_detail("Windows Broker provider is only available on Windows"))
-        }
+        let options = BrokerCreateSymlinkOptions::new(source, link)
+            .target_kind(broker_target_kind(kind))
+            .replace_existing_symlink(replace);
+
+        create_symlink_via_broker(options).map_err(|error| {
+            broker_error_to_symlink_error(error)
+                .with_source(source)
+                .with_link(link)
+        })
     }
 }
 
@@ -568,8 +529,10 @@ fn broker_error_to_symlink_error(error: WinSymlinksError) -> SymlinkError {
     SymlinkError::new(kind, SymlinkBackend::WindowsBroker)
         .with_detail(error.message().to_string())
         .with_broker_code(error.code().to_string())
+        .with_cause(error)
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MockEntry {
     File,
@@ -578,12 +541,14 @@ pub enum MockEntry {
     Unsupported,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Default)]
 pub struct MockSymlinkProvider {
     entries: BTreeMap<PathBuf, MockEntry>,
     fail_next_replacement: bool,
 }
 
+#[cfg(test)]
 impl MockSymlinkProvider {
     pub fn new() -> Self {
         Self::default()
@@ -661,7 +626,11 @@ impl MockSymlinkProvider {
     }
 }
 
+#[cfg(test)]
 impl SymlinkProvider for MockSymlinkProvider {
+    fn validate_source(&self, source: &Path, kind: LinkKind) -> SymlinkResult<()> {
+        MockSymlinkProvider::validate_source(self, source, kind)
+    }
     fn backend(&self) -> SymlinkBackend {
         SymlinkBackend::Mock
     }
@@ -708,29 +677,12 @@ impl SymlinkProvider for MockSymlinkProvider {
     }
 
     fn remove_symlink(&mut self, link: &Path) -> SymlinkResult<RemoveSymlinkOutcome> {
-        match self.entries.get(link) {
-            None => Ok(RemoveSymlinkOutcome::Missing),
-            Some(MockEntry::Symlink { .. }) => {
-                self.entries.remove(link);
-                Ok(RemoveSymlinkOutcome::Removed)
-            }
-            Some(MockEntry::File) => Err(SymlinkError::new(
-                SymlinkErrorKind::ExistingRealFile,
-                SymlinkBackend::Mock,
-            )
-            .with_link(link)),
-            Some(MockEntry::Directory) => Err(SymlinkError::new(
-                SymlinkErrorKind::ExistingRealDirectory,
-                SymlinkBackend::Mock,
-            )
-            .with_link(link)),
-            Some(MockEntry::Unsupported) => Err(SymlinkError::new(
-                SymlinkErrorKind::UnsupportedLinkKind,
-                SymlinkBackend::Mock,
-            )
-            .with_link(link)
-            .with_detail("unsupported file type cannot be removed as a symlink")),
+        let state = self.link_status(Path::new(""), link, LinkKind::File)?;
+        let outcome = evaluate_remove(&state, link, self.backend())?;
+        if outcome == RemoveSymlinkOutcome::Removed {
+            self.entries.remove(link);
         }
+        Ok(outcome)
     }
 
     fn read_link(&self, link: &Path) -> SymlinkResult<PathBuf> {
@@ -804,7 +756,8 @@ fn validate_source(source: &Path, kind: LinkKind, backend: SymlinkBackend) -> Sy
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             return Err(SymlinkError::new(SymlinkErrorKind::SourceNotFound, backend)
                 .with_source(source)
-                .with_system_code(error.raw_os_error()));
+                .with_system_code(error.raw_os_error())
+                .with_cause(error));
         }
         Err(error) => return Err(io_to_symlink_error(error, backend).with_source(source)),
     };
@@ -840,7 +793,8 @@ fn validate_link_parent(link: &Path, backend: SymlinkBackend) -> SymlinkResult<(
             backend,
         )
         .with_link(link)
-        .with_system_code(error.raw_os_error())),
+        .with_system_code(error.raw_os_error())
+        .with_cause(error)),
         Err(error) => Err(io_to_symlink_error(error, backend).with_link(link)),
     }
 }
@@ -1018,23 +972,16 @@ fn remove_fs_symlink(link: &Path, backend: SymlinkBackend) -> SymlinkResult<Remo
     };
 
     if !link_metadata.file_type().is_symlink() {
-        if link_metadata.is_file() {
-            return Err(
-                SymlinkError::new(SymlinkErrorKind::ExistingRealFile, backend).with_link(link),
-            );
-        }
-
-        if link_metadata.is_dir() {
-            return Err(
-                SymlinkError::new(SymlinkErrorKind::ExistingRealDirectory, backend).with_link(link),
-            );
-        }
-
-        return Err(
-            SymlinkError::new(SymlinkErrorKind::UnsupportedLinkKind, backend)
-                .with_link(link)
-                .with_detail("unsupported file type cannot be removed as a symlink"),
-        );
+        let status = if link_metadata.is_file() {
+            LinkStatus::ExistingRealFile
+        } else if link_metadata.is_dir() {
+            LinkStatus::ExistingRealDirectory
+        } else {
+            LinkStatus::UnsupportedFileType {
+                path: link.to_path_buf(),
+            }
+        };
+        return evaluate_remove(&status, link, backend);
     }
 
     remove_symlink_path(link, &link_metadata, backend)?;
@@ -1091,6 +1038,7 @@ fn fs_targets_match(link: &Path, actual: &Path, expected: &Path) -> bool {
     }
 }
 
+#[cfg(test)]
 fn mock_targets_match(link: &Path, actual: &Path, expected: &Path) -> bool {
     actual == expected || resolve_relative_target(link, actual) == expected
 }
@@ -1114,6 +1062,7 @@ fn io_to_symlink_error(error: io::Error, backend: SymlinkBackend) -> SymlinkErro
     SymlinkError::new(kind, backend)
         .with_detail(error.to_string())
         .with_system_code(error.raw_os_error())
+        .with_cause(error)
 }
 
 #[cfg(test)]
@@ -1319,7 +1268,7 @@ mod tests {
             &path("project/source.md"),
             &path("project/link.md"),
             LinkKind::File,
-            CreateSymlinkOptions::new(),
+            CreateSymlinkOptions { force: false },
         )
         .unwrap();
         assert_eq!(created, CreateSymlinkOutcome::Created);
@@ -1329,7 +1278,7 @@ mod tests {
             &path("project/source.md"),
             &path("project/link.md"),
             LinkKind::File,
-            CreateSymlinkOptions::new(),
+            CreateSymlinkOptions { force: false },
         )
         .unwrap();
         assert_eq!(skipped, CreateSymlinkOutcome::AlreadyCorrect);
@@ -1351,7 +1300,7 @@ mod tests {
             &path("project/source.md"),
             &path("project/link.md"),
             LinkKind::File,
-            CreateSymlinkOptions::new(),
+            CreateSymlinkOptions { force: false },
         )
         .unwrap_err();
 
@@ -1378,7 +1327,7 @@ mod tests {
             &path("project/source.md"),
             &path("project/link.md"),
             LinkKind::File,
-            CreateSymlinkOptions::force_wrong_symlink(),
+            CreateSymlinkOptions { force: true },
         )
         .unwrap();
 
@@ -1408,7 +1357,7 @@ mod tests {
                         &source,
                         &link,
                         LinkKind::File,
-                        CreateSymlinkOptions::new()
+                        CreateSymlinkOptions { force: false }
                     )
                     .unwrap_err()
                     .kind(),
@@ -1423,7 +1372,7 @@ mod tests {
                     &source,
                     &link,
                     LinkKind::File,
-                    CreateSymlinkOptions::force_wrong_symlink(),
+                    CreateSymlinkOptions { force: true },
                 );
                 if fail {
                     assert_eq!(result.unwrap_err().kind(), SymlinkErrorKind::Io);
@@ -1450,7 +1399,7 @@ mod tests {
                 &source,
                 &link,
                 LinkKind::File,
-                CreateSymlinkOptions::force_wrong_symlink(),
+                CreateSymlinkOptions { force: true },
             )
             .unwrap_err()
             .kind(),
@@ -1500,7 +1449,7 @@ mod tests {
             &path("project/source.md"),
             &path("project/link.md"),
             LinkKind::File,
-            CreateSymlinkOptions::force_wrong_symlink(),
+            CreateSymlinkOptions { force: true },
         )
         .unwrap_err();
         assert_eq!(file_error.kind(), SymlinkErrorKind::ExistingRealFile);
@@ -1518,7 +1467,7 @@ mod tests {
             &path("project/source.md"),
             &path("project/link.md"),
             LinkKind::File,
-            CreateSymlinkOptions::force_wrong_symlink(),
+            CreateSymlinkOptions { force: true },
         )
         .unwrap_err();
         assert_eq!(dir_error.kind(), SymlinkErrorKind::ExistingRealDirectory);
@@ -1542,7 +1491,7 @@ mod tests {
             &path("project/source.md"),
             &path("project/link.md"),
             LinkKind::File,
-            CreateSymlinkOptions::force_wrong_symlink(),
+            CreateSymlinkOptions { force: true },
         )
         .unwrap_err();
 
@@ -1723,7 +1672,7 @@ mod tests {
                     &source,
                     &link,
                     kind,
-                    CreateSymlinkOptions::new()
+                    CreateSymlinkOptions { force: false }
                 )
                 .unwrap_err()
                 .kind(),
@@ -1735,7 +1684,7 @@ mod tests {
                     &source,
                     &link,
                     kind,
-                    CreateSymlinkOptions::force_wrong_symlink()
+                    CreateSymlinkOptions { force: true }
                 )
                 .unwrap(),
                 CreateSymlinkOutcome::ReplacedWrongSymlink
@@ -1826,7 +1775,7 @@ mod tests {
                         &source,
                         &link,
                         kind,
-                        CreateSymlinkOptions::new()
+                        CreateSymlinkOptions { force: false }
                     )
                     .unwrap_err()
                     .kind(),
@@ -1838,7 +1787,7 @@ mod tests {
                         &source,
                         &link,
                         kind,
-                        CreateSymlinkOptions::force_wrong_symlink()
+                        CreateSymlinkOptions { force: true }
                     )
                     .unwrap(),
                     CreateSymlinkOutcome::ReplacedWrongSymlink

@@ -8,9 +8,11 @@
 
 ## 代码入口
 
-- [DoctorReport/DoctorCheck](../../src/core/project_links.rs#L133)、[doctor_current_project/doctor_project](../../src/core/project_links.rs#L586)、[check_broker_probe](../../src/core/project_links.rs#L717)。
-- [Doctor 回归测试](../../src/core/project_links.rs#L1842)、[core 模块列表](../../src/core/mod.rs#L1)。
-- [Doctor command/report](../../src/commands/mod.rs#L177)、[run](../../src/commands/mod.rs#L240)、[CLI report_lines](../../src/cli.rs#L582)。
+- [src/core/doctor.rs · `pub struct DoctorReport`](../../src/core/doctor.rs#L20)。
+- [src/core/doctor.rs · `pub fn doctor_project`](../../src/core/doctor.rs#L33)。
+- [src/core/doctor.rs · `fn check_broker_probe`](../../src/core/doctor.rs#L145)。
+- [src/core/mod.rs · `pub mod doctor;`](../../src/core/mod.rs#L1)。
+- [src/commands/mod.rs · `fn failed_doctor`](../../src/commands/mod.rs#L427)。
 
 ## 修改清单
 
@@ -28,4 +30,4 @@
 
 ## 执行记录
 
-未执行。完成时填写移动符号、新文件位置和验证结果，再勾选 TODO 18。
+实现、验证结果和未解决问题统一记录于[阶段三进度 · 18](阶段三进度.md#步骤-18)。

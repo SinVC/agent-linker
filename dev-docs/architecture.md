@@ -35,6 +35,8 @@
 | CLI Command Surface | [06-cli-command-surface.md](modules/06-cli-command-surface.md) | 顶层命令、命令职责和用户可见行为边界 | P1 |
 | Code Architecture & Verification | [07-code-architecture-verification.md](modules/07-code-architecture-verification.md) | 代码层职责、依赖规则、扩展策略和测试边界 | P1 |
 
+命令层统一定位路径、构造默认 Provider 与 `project_links::ProjectCtx`，按用例打开一次 Store。`core/project_links.rs` 使用共享 LinkPlan 编排链接变更；`core/doctor.rs` 独立编排诊断。
+
 ## 依赖关系
 
 ```text
