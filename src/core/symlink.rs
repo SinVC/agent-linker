@@ -1034,7 +1034,59 @@ fn fs_targets_match(link: &Path, actual: &Path, expected: &Path) -> bool {
             crate::core::paths::normalize_windows_path(&actual)
                 == crate::core::paths::normalize_windows_path(&expected)
         }
+        (Err(actual_err), Err(expected_err))
+            if actual_err.kind() == io::ErrorKind::NotFound
+                && expected_err.kind() == io::ErrorKind::NotFound =>
+        {
+            ancestor_targets_match(&actual, expected)
+        }
         _ => false,
+    }
+}
+
+fn ancestor_targets_match(actual: &Path, expected: &Path) -> bool {
+    let Some((actual_ancestor, actual_tail)) = split_longest_existing_ancestor(actual) else {
+        return false;
+    };
+    let Some((expected_ancestor, expected_tail)) = split_longest_existing_ancestor(expected) else {
+        return false;
+    };
+
+    if actual_tail != expected_tail {
+        return false;
+    }
+
+    match (actual_ancestor.canonicalize(), expected_ancestor.canonicalize()) {
+        (Ok(a), Ok(e)) => {
+            crate::core::paths::normalize_windows_path(&a)
+                == crate::core::paths::normalize_windows_path(&e)
+        }
+        _ => false,
+    }
+}
+
+fn split_longest_existing_ancestor(path: &Path) -> Option<(PathBuf, PathBuf)> {
+    let mut current = path.to_path_buf();
+    let mut tail_components = Vec::new();
+
+    loop {
+        match current.canonicalize() {
+            Ok(_) => {
+                let mut tail = PathBuf::new();
+                for comp in tail_components.into_iter().rev() {
+                    tail.push(comp);
+                }
+                return Some((current, tail));
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                let file_name = current.file_name()?.to_os_string();
+                tail_components.push(file_name);
+                if !current.pop() {
+                    return None;
+                }
+            }
+            Err(_) => return None,
+        }
     }
 }
 
@@ -1070,11 +1122,12 @@ mod tests {
     #[cfg(windows)]
     use super::{broker_error_to_symlink_error, ErrorCode, WinSymlinksError};
     use super::{
-        default_provider, ensure_symlink, CreateSymlinkOptions, CreateSymlinkOutcome, LinkKind,
-        LinkStatus, MockEntry, MockSymlinkProvider, RemoveSymlinkOutcome, StdSymlinkProvider,
-        SymlinkBackend, SymlinkErrorKind, SymlinkProvider,
+        default_provider, ensure_symlink, fs_targets_match, CreateSymlinkOptions,
+        CreateSymlinkOutcome, LinkKind, LinkStatus, MockEntry, MockSymlinkProvider,
+        RemoveSymlinkOutcome, StdSymlinkProvider, SymlinkBackend, SymlinkErrorKind,
+        SymlinkProvider,
     };
-    use std::path::PathBuf;
+    use std::{fs, path::PathBuf};
     #[cfg(unix)]
     use std::{
         fs,
@@ -1863,5 +1916,67 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
         }
+    }
+
+    #[test]
+    fn fs_targets_match_broken_link_with_case_variant_existing_ancestor() {
+        let temp = crate::core::test_support::TestDir::new("targets-match-broken");
+        let parent = temp.path().join("ParentDir").join("SubDir");
+        fs::create_dir_all(&parent).unwrap();
+
+        let link = temp.path().join("link.txt");
+        let actual = parent.join("missing_leaf.txt");
+
+        #[cfg(windows)]
+        let expected = {
+            let path_str = actual.to_string_lossy().to_ascii_lowercase();
+            PathBuf::from(path_str)
+        };
+        #[cfg(not(windows))]
+        let expected = actual.clone();
+
+        assert!(fs_targets_match(&link, &actual, &expected));
+    }
+
+    #[test]
+    fn fs_targets_match_broken_link_rejects_different_ancestors() {
+        let temp = crate::core::test_support::TestDir::new("targets-diff-ancestors");
+        let p1 = temp.path().join("ParentOne");
+        let p2 = temp.path().join("ParentTwo");
+        fs::create_dir_all(&p1).unwrap();
+        fs::create_dir_all(&p2).unwrap();
+
+        let link = temp.path().join("link.txt");
+        let actual = p1.join("missing.txt");
+        let expected = p2.join("missing.txt");
+
+        assert!(!fs_targets_match(&link, &actual, &expected));
+    }
+
+    #[test]
+    fn fs_targets_match_broken_link_rejects_different_missing_depths() {
+        let temp = crate::core::test_support::TestDir::new("targets-diff-depths");
+        let parent = temp.path().join("Parent");
+        fs::create_dir_all(&parent).unwrap();
+
+        let link = temp.path().join("link.txt");
+        let actual = parent.join("deep").join("missing.txt");
+        let expected = parent.join("missing.txt");
+
+        assert!(!fs_targets_match(&link, &actual, &expected));
+    }
+
+    #[test]
+    fn fs_targets_match_broken_link_rejects_case_different_tail() {
+        let temp = crate::core::test_support::TestDir::new("targets-tail-case");
+        let parent = temp.path().join("Parent");
+        fs::create_dir_all(&parent).unwrap();
+
+        let link = temp.path().join("link.txt");
+        let actual = parent.join("MissingLeaf.txt");
+        let expected = parent.join("missingleaf.txt");
+
+        // Strict tail comparison preserves correctness for case-sensitive directories
+        assert!(!fs_targets_match(&link, &actual, &expected));
     }
 }

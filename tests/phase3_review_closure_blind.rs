@@ -3,10 +3,10 @@ use agent_linker::core::{
     linkable::{LinkableItem, LinkableItemType},
     manifest::{load_manifest, manifest_path, save_manifest, LinkOrigin, LinkRecord, Manifest},
     paths::{managed_relative_path_key, DbPathReason, DbPathResolution},
-    project_links::{self, LinkItemRequest, LinkOptions, ProjectCtx},
+    project_links::{self, CleanMode, CleanOptions, LinkItemRequest, LinkOptions, ProjectCtx},
     registry::AddLinkableItem,
     store::Store,
-    symlink::{default_provider, CreateSymlinkOutcome, LinkKind},
+    symlink::{default_provider, CreateSymlinkOutcome, LinkKind, LinkStatus},
 };
 use std::{
     collections::HashSet,
@@ -274,6 +274,53 @@ fn real_broker_case_equivalent_existing_record_relinks() {
     assert_eq!(links.len(), 1);
     assert_eq!(links[0].id, old.id);
     assert_eq!(links[0].created_at, old.created_at);
+}
+
+#[test]
+#[cfg(windows)]
+fn real_broker_broken_symlink_ancestor_case_status_and_clean() {
+    for mode in [CleanMode::Default, CleanMode::Broken] {
+        let f = Fixture::new();
+        let store = f.store();
+        let item = f.resource(&store, "broken_item", "broken.txt", "Config/Sub");
+        fs::create_dir_all(f.0.join("Config/Sub")).unwrap();
+
+        let mut provider = default_provider();
+        let link_path = f.0.join("Config/Sub/broken.txt");
+        provider
+            .create_symlink(&item.source_path, &link_path, LinkKind::File)
+            .unwrap();
+
+        let record = record(&item, "Config/Sub/broken.txt");
+        put(&f, record.clone());
+
+        // Delete the real source file to create a broken symlink on disk
+        fs::remove_file(&item.source_path).unwrap();
+
+        let mut ctx = ProjectCtx {
+            root: &f.0,
+            provider: &mut *provider,
+        };
+
+        // 1. Verify status detects BrokenSymlink despite ancestor casing differences
+        let status_report = project_links::status(&mut ctx).unwrap();
+        assert_eq!(status_report.entries.len(), 1);
+        assert!(
+            matches!(status_report.entries[0].status, LinkStatus::BrokenSymlink { .. }),
+            "expected BrokenSymlink, got {:?}",
+            status_report.entries[0].status
+        );
+
+        // 2. Verify clean in this mode successfully removes the broken link
+        let clean_report = project_links::clean(&mut ctx, CleanOptions::new(mode)).unwrap();
+        assert_eq!(clean_report.removed.len(), 1);
+        assert_eq!(clean_report.removed[0].record.id, record.id);
+        assert!(link_path.symlink_metadata().is_err());
+
+        // Manifest is now cleanly empty
+        let loaded = load_manifest(&f.0).unwrap();
+        assert!(loaded.links.is_empty());
+    }
 }
 
 #[test]
