@@ -7,6 +7,7 @@ use std::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Entry {
     File,
+    #[allow(dead_code)]
     Directory,
     Symlink { target: PathBuf, kind: LinkKind },
 }
@@ -24,6 +25,7 @@ impl MockSymlinkProvider {
     pub fn add_file(&mut self, p: impl Into<PathBuf>) {
         self.entries.insert(p.into(), Entry::File);
     }
+    #[allow(dead_code)]
     pub fn add_dir(&mut self, p: impl Into<PathBuf>) {
         self.entries.insert(p.into(), Entry::Directory);
     }
@@ -41,6 +43,7 @@ impl MockSymlinkProvider {
             },
         );
     }
+    #[allow(dead_code)]
     pub fn fail_next_replacement(&mut self) {
         self.fail_replace = true;
     }

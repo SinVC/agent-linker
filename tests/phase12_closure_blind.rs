@@ -192,7 +192,7 @@ fn mapping_normalizes_only_destination_and_initializes_dot_prefixed_paths() {
             .unwrap()
             .links
             .iter()
-            .find(|r| r.link_path == PathBuf::from("GEMINI.md"))
+            .find(|r| r.link_path == Path::new("GEMINI.md"))
             .unwrap()
             .origin,
         LinkOrigin::Harness
@@ -324,7 +324,7 @@ fn group_create_and_rename_return_written_identity_when_name_is_another_id() {
     let item = f.skill(&store, "writer", None);
     let first = store.create_group("first", Some("original")).unwrap();
     store
-        .add_group_items(&first.id, &[item.id.clone()])
+        .add_group_items(&first.id, std::slice::from_ref(&item.id))
         .unwrap();
     let second = store.create_group(&first.id, Some("new")).unwrap();
     assert_ne!(second.id, first.id);
@@ -509,7 +509,9 @@ fn group_then_all_unlink_use_item_origin_and_current_ids_for_every_alias() {
     // Rebuild current membership without depending on an additional exported API.
     store.delete_group("daily").unwrap();
     store.create_group("daily", None).unwrap();
-    store.add_group_items("daily", &[alpha.id.clone()]).unwrap();
+    store
+        .add_group_items("daily", std::slice::from_ref(&alpha.id))
+        .unwrap();
     let mut manifest = load_manifest(f.root()).unwrap();
     manifest
         .links

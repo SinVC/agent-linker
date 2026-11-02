@@ -200,4 +200,14 @@ mod tests {
         assert_eq!(err.to_string(), "corrupt receipt; path=custom/receipt.json");
         assert!(err.source().is_some());
     }
+
+    #[test]
+    fn error_type_layout_sizes_are_documented() {
+        #[cfg(target_pointer_width = "64")]
+        {
+            assert_eq!(std::mem::size_of::<Error>(), 144);
+            assert_eq!(std::mem::size_of::<SymlinkError>(), 144);
+            assert_eq!(std::mem::size_of::<rusqlite::Error>(), 64);
+        }
+    }
 }

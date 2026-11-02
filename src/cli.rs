@@ -498,7 +498,7 @@ fn write_status_json(mut writer: impl Write, report: &CommandReport) -> io::Resu
         return Ok(());
     };
     serde_json::to_writer_pretty(&mut writer, &JsonStatusReport::from(report))
-        .map_err(|error| io::Error::new(io::ErrorKind::Other, error))?;
+        .map_err(io::Error::other)?;
     writeln!(writer)?;
     Ok(())
 }

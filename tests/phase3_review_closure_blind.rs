@@ -189,7 +189,9 @@ fn old_record_identity_is_preserved_for_single_and_group_links() {
         };
         if group {
             store.create_group("batch", None).unwrap();
-            store.add_group_items("batch", &[item.id.clone()]).unwrap();
+            store
+                .add_group_items("batch", std::slice::from_ref(&item.id))
+                .unwrap();
             let report =
                 project_links::link_group(&mut ctx, &store, "batch", LinkOptions::default())
                     .unwrap();
@@ -352,7 +354,9 @@ fn foreign_item_and_harness_occupants_conflict_without_effects() {
                 };
                 let err = if group {
                     store.create_group("batch", None).unwrap();
-                    store.add_group_items("batch", &[item.id.clone()]).unwrap();
+                    store
+                        .add_group_items("batch", std::slice::from_ref(&item.id))
+                        .unwrap();
                     project_links::link_group(&mut ctx, &store, "batch", options).unwrap_err()
                 } else {
                     project_links::link_item(&mut ctx, &store, &req(&item.id, None), options)
