@@ -1056,7 +1056,10 @@ fn ancestor_targets_match(actual: &Path, expected: &Path) -> bool {
         return false;
     }
 
-    match (actual_ancestor.canonicalize(), expected_ancestor.canonicalize()) {
+    match (
+        actual_ancestor.canonicalize(),
+        expected_ancestor.canonicalize(),
+    ) {
         (Ok(a), Ok(e)) => {
             crate::core::paths::normalize_windows_path(&a)
                 == crate::core::paths::normalize_windows_path(&e)
@@ -1130,7 +1133,6 @@ mod tests {
     use std::{fs, path::PathBuf};
     #[cfg(unix)]
     use std::{
-        fs,
         path::Path,
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -1978,5 +1980,83 @@ mod tests {
 
         // Strict tail comparison preserves correctness for case-sensitive directories
         assert!(!fs_targets_match(&link, &actual, &expected));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn fs_targets_match_broken_link_in_real_case_sensitive_directory() {
+        let temp = crate::core::test_support::TestDir::new("targets-cs-dir");
+        let cs_dir = temp.path().join("CaseSensitiveParent");
+        fs::create_dir_all(&cs_dir).unwrap();
+
+        let status = std::process::Command::new("fsutil.exe")
+            .args([
+                "file",
+                "setCaseSensitiveInfo",
+                cs_dir.to_str().unwrap(),
+                "enable",
+            ])
+            .output();
+
+        let Ok(output) = status else { return };
+        if !output.status.success() {
+            return;
+        }
+
+        let link = temp.path().join("link.txt");
+
+        // In an actual case-sensitive directory, tails with different casing must NOT match
+        let actual_cs = cs_dir.join("MissingLeaf.txt");
+        let expected_cs_diff = cs_dir.join("missingleaf.txt");
+        assert!(!fs_targets_match(&link, &actual_cs, &expected_cs_diff));
+
+        // But ancestor casing difference before the directory with identical tail must match
+        let cs_dir_str = cs_dir.to_str().unwrap();
+        let flipped_drive = {
+            let c = cs_dir_str.chars().next().unwrap();
+            let flipped = if c.is_ascii_uppercase() {
+                c.to_ascii_lowercase()
+            } else {
+                c.to_ascii_uppercase()
+            };
+            PathBuf::from(format!("{}{}", flipped, &cs_dir_str[1..]))
+        };
+        let expected_cs_same_tail = flipped_drive.join("MissingLeaf.txt");
+        assert!(fs_targets_match(&link, &actual_cs, &expected_cs_same_tail));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn fs_targets_match_broken_link_rejects_permission_denied_ancestor() {
+        let temp = crate::core::test_support::TestDir::new("targets-denied");
+        let denied_dir = temp.path().join("DeniedDir");
+        fs::create_dir_all(&denied_dir).unwrap();
+
+        let output = std::process::Command::new("icacls.exe")
+            .args([denied_dir.to_str().unwrap(), "/deny", "*S-1-1-0:(F)"])
+            .output();
+
+        let Ok(output) = output else { return };
+        if !output.status.success() {
+            return;
+        }
+
+        let link = temp.path().join("link.txt");
+        let actual = denied_dir.join("sub").join("missing.txt");
+        let expected = temp
+            .path()
+            .join("DENIEDDIR")
+            .join("sub")
+            .join("missing.txt");
+        assert_ne!(actual, expected);
+
+        let matched = fs_targets_match(&link, &actual, &expected);
+
+        // Restore permissions for clean removal by Drop
+        let _ = std::process::Command::new("icacls.exe")
+            .args([denied_dir.to_str().unwrap(), "/grant", "*S-1-1-0:(F)"])
+            .output();
+
+        assert!(!matched);
     }
 }

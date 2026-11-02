@@ -287,17 +287,29 @@ fn real_broker_broken_symlink_ancestor_case_status_and_clean() {
         let item = f.resource(&store, "broken_item", "broken.txt", "Config/Sub");
         fs::create_dir_all(f.0.join("Config/Sub")).unwrap();
 
+        // Deliberately create the symlink pointing to an ancestor with different casing ("SOURCES" vs "sources")
+        let source_str = item.source_path.to_str().unwrap();
+        assert!(source_str.contains("sources"));
+        let variant_source_path = PathBuf::from(source_str.replace("sources", "SOURCES"));
+        assert_ne!(variant_source_path, item.source_path);
+
         let mut provider = default_provider();
         let link_path = f.0.join("Config/Sub/broken.txt");
         provider
-            .create_symlink(&item.source_path, &link_path, LinkKind::File)
+            .create_symlink(&variant_source_path, &link_path, LinkKind::File)
             .unwrap();
+
+        // Verify that the link on disk has an ancestor casing difference from the registered source
+        let disk_target = provider.read_link(&link_path).unwrap();
+        assert_ne!(disk_target, item.source_path);
 
         let record = record(&item, "Config/Sub/broken.txt");
         put(&f, record.clone());
 
         // Delete the real source file to create a broken symlink on disk
         fs::remove_file(&item.source_path).unwrap();
+        assert!(!item.source_path.exists());
+        assert!(!variant_source_path.exists());
 
         let mut ctx = ProjectCtx {
             root: &f.0,
@@ -308,7 +320,10 @@ fn real_broker_broken_symlink_ancestor_case_status_and_clean() {
         let status_report = project_links::status(&mut ctx).unwrap();
         assert_eq!(status_report.entries.len(), 1);
         assert!(
-            matches!(status_report.entries[0].status, LinkStatus::BrokenSymlink { .. }),
+            matches!(
+                status_report.entries[0].status,
+                LinkStatus::BrokenSymlink { .. }
+            ),
             "expected BrokenSymlink, got {:?}",
             status_report.entries[0].status
         );

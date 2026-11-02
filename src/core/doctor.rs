@@ -10,9 +10,9 @@ use crate::core::{
     store::{self, Store},
     symlink::default_provider,
 };
-use std::{fs, path::Path, path::PathBuf};
 #[cfg(windows)]
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::{fs, path::Path, path::PathBuf};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DoctorReport {
     pub checks: Vec<DoctorCheck>,

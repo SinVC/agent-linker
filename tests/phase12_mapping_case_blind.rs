@@ -31,7 +31,10 @@ impl Fixture {
             match fs::create_dir(&root) {
                 Ok(()) => return Self(root),
                 Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(err) => panic!("failed to create mapping case test directory {}: {err}", root.display()),
+                Err(err) => panic!(
+                    "failed to create mapping case test directory {}: {err}",
+                    root.display()
+                ),
             }
         }
         panic!("failed to create exclusive mapping case test directory after multiple attempts");

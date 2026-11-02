@@ -116,9 +116,9 @@ impl Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::DatabaseMessage(msg)
-            | Self::Manifest(msg)
-            | Self::NotFound(msg) => write!(f, "{msg}"),
+            Self::DatabaseMessage(msg) | Self::Manifest(msg) | Self::NotFound(msg) => {
+                write!(f, "{msg}")
+            }
             Self::InvalidArguments { message, .. } | Self::Project { message, .. } => {
                 write!(f, "{message}")
             }

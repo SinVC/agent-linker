@@ -35,7 +35,10 @@ impl Fixture {
                     };
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(err) => panic!("failed to create phase 2 test directory {}: {err}", root.display()),
+                Err(err) => panic!(
+                    "failed to create phase 2 test directory {}: {err}",
+                    root.display()
+                ),
             }
         }
         panic!("failed to create exclusive phase 2 test directory after multiple attempts");

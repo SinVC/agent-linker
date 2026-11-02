@@ -35,7 +35,10 @@ impl Project {
                     return Self(path, original);
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(err) => panic!("failed to create project discovery directory {}: {err}", path.display()),
+                Err(err) => panic!(
+                    "failed to create project discovery directory {}: {err}",
+                    path.display()
+                ),
             }
         }
         panic!("failed to create exclusive project discovery directory after multiple attempts");

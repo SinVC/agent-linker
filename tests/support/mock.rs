@@ -9,7 +9,10 @@ pub enum Entry {
     File,
     #[allow(dead_code)]
     Directory,
-    Symlink { target: PathBuf, kind: LinkKind },
+    Symlink {
+        target: PathBuf,
+        kind: LinkKind,
+    },
 }
 #[derive(Default)]
 pub struct MockSymlinkProvider {

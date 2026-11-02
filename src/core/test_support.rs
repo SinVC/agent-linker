@@ -24,21 +24,50 @@ pub struct TestDir {
 
 impl TestDir {
     pub fn new(label: &str) -> Self {
-        for _ in 0..20 {
+        Self::create_in(&std::env::temp_dir(), 20, || {
             let counter = TEST_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
+            format!(
                 "agent-linker-{label}-{}-{}-{}",
                 std::process::id(),
                 timestamp_nanos(),
                 counter
-            ));
+            )
+        })
+    }
+
+    pub fn create_in(
+        base: &Path,
+        max_retries: usize,
+        mut name_gen: impl FnMut() -> String,
+    ) -> Self {
+        for _ in 0..max_retries {
+            let path = base.join(name_gen());
             match fs::create_dir(&path) {
                 Ok(()) => return Self { path },
                 Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(err) => panic!("failed to create test directory {}: {err}", path.display()),
             }
         }
-        panic!("failed to create unique test directory for `{label}` after multiple attempts");
+        panic!("failed to create unique test directory after {max_retries} attempts");
+    }
+
+    pub fn try_create_in(
+        base: &Path,
+        max_retries: usize,
+        mut name_gen: impl FnMut() -> String,
+    ) -> std::io::Result<Self> {
+        for _ in 0..max_retries {
+            let path = base.join(name_gen());
+            match fs::create_dir(&path) {
+                Ok(()) => return Ok(Self { path }),
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => return Err(err),
+            }
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("exhausted {max_retries} attempts creating unique test directory"),
+        ))
     }
 
     pub fn path(&self) -> &Path {
@@ -65,37 +94,45 @@ mod tests {
         let sentinel = occupied_path.join("sentinel.txt");
         fs::write(&sentinel, "preserve").unwrap();
 
-        // Simulate TestDir creation loop skipping occupied path
+        // Call the ACTUAL creation logic (TestDir::create_in), injecting the occupied path first
         let mut tried = false;
-        let mut created_path = None;
-        for _ in 0..10 {
-            let path = if !tried {
+        let dir = TestDir::create_in(&base, 10, || {
+            if !tried {
                 tried = true;
-                occupied_path.clone()
+                occupied_name.clone()
             } else {
-                base.join(format!(
-                    "agent-linker-occupied-test-{}-unique",
-                    timestamp_nanos()
-                ))
-            };
-            match fs::create_dir(&path) {
-                Ok(()) => {
-                    created_path = Some(TestDir { path });
-                    break;
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(err) => panic!("{err}"),
+                format!("agent-linker-occupied-test-{}-unique", timestamp_nanos())
             }
-        }
+        });
 
-        let dir = created_path.expect("must create unique test dir");
         assert!(dir.path().is_dir());
+        assert_ne!(dir.path(), occupied_path.as_path());
         assert!(sentinel.is_file());
         drop(dir);
 
-        // Sentinel must still be intact
+        // Sentinel and occupied directory must still be intact
+        assert!(occupied_path.is_dir());
         assert!(sentinel.is_file());
         assert_eq!(fs::read_to_string(&sentinel).unwrap(), "preserve");
+        let _ = fs::remove_dir_all(&occupied_path);
+    }
+
+    #[test]
+    fn test_dir_exhausts_retries_without_deleting_occupied_sentinel() {
+        let base = std::env::temp_dir();
+        let occupied_name = format!("agent-linker-always-occupied-{}", timestamp_nanos());
+        let occupied_path = base.join(&occupied_name);
+        fs::create_dir(&occupied_path).unwrap();
+        let sentinel = occupied_path.join("sentinel.txt");
+        fs::write(&sentinel, "preserve-always").unwrap();
+
+        let result = TestDir::try_create_in(&base, 3, || occupied_name.clone());
+        assert!(result.is_err());
+
+        // Sentinel and occupied directory must still be completely untouched
+        assert!(occupied_path.is_dir());
+        assert!(sentinel.is_file());
+        assert_eq!(fs::read_to_string(&sentinel).unwrap(), "preserve-always");
         let _ = fs::remove_dir_all(&occupied_path);
     }
 

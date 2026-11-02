@@ -280,5 +280,8 @@ fn harness_mapping_primary_key_collision_fails_and_rolls_back() {
             .map_err(Error::from)
         })
         .unwrap();
-    assert_eq!(count, 0, "transaction must roll back completely on collision");
+    assert_eq!(
+        count, 0,
+        "transaction must roll back completely on collision"
+    );
 }

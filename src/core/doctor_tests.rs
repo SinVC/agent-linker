@@ -1,5 +1,7 @@
 use crate::core::{
-    doctor::{create_exclusive_probe_dir_in, doctor_project, doctor_project_with_probe, DoctorCheck},
+    doctor::{
+        create_exclusive_probe_dir_in, doctor_project, doctor_project_with_probe, DoctorCheck,
+    },
     manifest::{save_manifest, Manifest},
     paths::{DbPathReason, DbPathResolution},
     store::Store,
@@ -46,30 +48,22 @@ fn doctor_public_entry_runs_with_default_probe() {
     let resolution = database(&temp_dir);
 
     let report = doctor_project(temp_dir.path(), &resolution, true);
-    assert!(
-        report
-            .checks
-            .iter()
-            .any(|check| check.name == "database" && check.ok)
-    );
-    assert!(
-        report
-            .checks
-            .iter()
-            .any(|check| check.name == "manifest" && check.ok)
-    );
-    assert!(
-        report
-            .checks
-            .iter()
-            .any(|check| check.name == "harness-adapter" && check.ok)
-    );
-    assert!(
-        report
-            .checks
-            .iter()
-            .any(|check| check.name == "symlink-backend" && check.ok)
-    );
+    assert!(report
+        .checks
+        .iter()
+        .any(|check| check.name == "database" && check.ok));
+    assert!(report
+        .checks
+        .iter()
+        .any(|check| check.name == "manifest" && check.ok));
+    assert!(report
+        .checks
+        .iter()
+        .any(|check| check.name == "harness-adapter" && check.ok));
+    assert!(report
+        .checks
+        .iter()
+        .any(|check| check.name == "symlink-backend" && check.ok));
 }
 
 #[test]
@@ -82,8 +76,14 @@ fn doctor_reports_database_manifest_harness_and_backend() {
     let report = doctor_project_with_probe(temp_dir.path(), &resolution, true, mock_ok_broker);
 
     assert!(report.ok, "doctor report must be healthy: {report:#?}");
-    assert!(report.checks.iter().any(|check| check.name == "database" && check.ok));
-    assert!(report.checks.iter().any(|check| check.name == "manifest" && check.ok));
+    assert!(report
+        .checks
+        .iter()
+        .any(|check| check.name == "database" && check.ok));
+    assert!(report
+        .checks
+        .iter()
+        .any(|check| check.name == "manifest" && check.ok));
     assert!(report
         .checks
         .iter()
@@ -183,11 +183,8 @@ fn probe_dir_lifecycle_exhausts_retries_without_deleting_occupied_sentinel() {
     let sentinel = occupied.join("sentinel.txt");
     fs::write(&sentinel, "never-delete-me").unwrap();
 
-    let result = create_exclusive_probe_dir_in(
-        test_dir.path(),
-        || "always-occupied".to_string(),
-        3,
-    );
+    let result =
+        create_exclusive_probe_dir_in(test_dir.path(), || "always-occupied".to_string(), 3);
 
     assert!(result.is_err());
     assert_eq!(
@@ -203,12 +200,9 @@ fn probe_dir_guard_cleans_up_on_early_failure() {
     let test_dir = TestDir::new("probe-lifecycle-failure");
     let created_path;
     {
-        let guard = create_exclusive_probe_dir_in(
-            test_dir.path(),
-            || "fail-test-dir".to_string(),
-            1,
-        )
-        .expect("should create probe dir");
+        let guard =
+            create_exclusive_probe_dir_in(test_dir.path(), || "fail-test-dir".to_string(), 1)
+                .expect("should create probe dir");
         created_path = guard.path().to_path_buf();
         assert!(created_path.is_dir());
 
