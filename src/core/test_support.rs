@@ -35,20 +35,13 @@ impl TestDir {
         })
     }
 
-    pub fn create_in(
-        base: &Path,
-        max_retries: usize,
-        mut name_gen: impl FnMut() -> String,
-    ) -> Self {
-        for _ in 0..max_retries {
-            let path = base.join(name_gen());
-            match fs::create_dir(&path) {
-                Ok(()) => return Self { path },
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(err) => panic!("failed to create test directory {}: {err}", path.display()),
-            }
-        }
-        panic!("failed to create unique test directory after {max_retries} attempts");
+    pub fn create_in(base: &Path, max_retries: usize, name_gen: impl FnMut() -> String) -> Self {
+        Self::try_create_in(base, max_retries, name_gen).unwrap_or_else(|err| {
+            panic!(
+                "failed to create test directory in {}: {err}",
+                base.display()
+            )
+        })
     }
 
     pub fn try_create_in(
@@ -126,8 +119,16 @@ mod tests {
         let sentinel = occupied_path.join("sentinel.txt");
         fs::write(&sentinel, "preserve-always").unwrap();
 
-        let result = TestDir::try_create_in(&base, 3, || occupied_name.clone());
-        assert!(result.is_err());
+        let mut attempts = 0;
+        let result = TestDir::try_create_in(&base, 3, || {
+            attempts += 1;
+            occupied_name.clone()
+        });
+        let error = result
+            .err()
+            .expect("occupied directory must exhaust retries");
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(attempts, 3);
 
         // Sentinel and occupied directory must still be completely untouched
         assert!(occupied_path.is_dir());

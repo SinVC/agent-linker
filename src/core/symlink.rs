@@ -1982,28 +1982,102 @@ mod tests {
         assert!(!fs_targets_match(&link, &actual, &expected));
     }
 
+    #[cfg(windows)]
+    fn run_windows_test_command(command: &mut std::process::Command) -> std::io::Result<()> {
+        let output = command.output()?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(format!(
+                "{command:?} failed with {}: stdout={}; stderr={}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            )))
+        }
+    }
+
+    #[cfg(windows)]
+    struct DirectoryAclGuard {
+        parent: PathBuf,
+        snapshot: PathBuf,
+        restored: bool,
+    }
+
+    #[cfg(windows)]
+    impl DirectoryAclGuard {
+        fn capture(directory: &std::path::Path) -> Self {
+            let parent = directory
+                .parent()
+                .expect("ACL test directory must have a parent");
+            let snapshot = directory.with_extension("acl");
+            run_windows_test_command(
+                std::process::Command::new("icacls.exe")
+                    .arg(directory)
+                    .arg("/save")
+                    .arg(&snapshot),
+            )
+            .expect("must save the original directory ACL before modifying it");
+            Self {
+                parent: parent.to_path_buf(),
+                snapshot,
+                restored: false,
+            }
+        }
+
+        fn restore(&mut self) -> std::io::Result<()> {
+            if !self.restored {
+                run_windows_test_command(
+                    std::process::Command::new("icacls.exe")
+                        .arg(&self.parent)
+                        .arg("/restore")
+                        .arg(&self.snapshot),
+                )?;
+                self.restored = true;
+            }
+            Ok(())
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for DirectoryAclGuard {
+        fn drop(&mut self) {
+            if let Err(error) = self.restore() {
+                eprintln!("failed to restore test directory ACL: {error}");
+            }
+        }
+    }
+
     #[test]
     #[cfg(windows)]
+    #[ignore = "requires Windows case-sensitivity support and permission to enable it; run explicitly with --ignored"]
     fn fs_targets_match_broken_link_in_real_case_sensitive_directory() {
         let temp = crate::core::test_support::TestDir::new("targets-cs-dir");
         let cs_dir = temp.path().join("CaseSensitiveParent");
         fs::create_dir_all(&cs_dir).unwrap();
 
-        let status = std::process::Command::new("fsutil.exe")
-            .args([
-                "file",
-                "setCaseSensitiveInfo",
-                cs_dir.to_str().unwrap(),
-                "enable",
-            ])
-            .output();
-
-        let Ok(output) = status else { return };
-        if !output.status.success() {
-            return;
-        }
+        run_windows_test_command(
+            std::process::Command::new("fsutil.exe")
+                .args(["file", "setCaseSensitiveInfo"])
+                .arg(&cs_dir)
+                .arg("enable"),
+        )
+        .expect("must enable case sensitivity for this explicitly requested test");
 
         let link = temp.path().join("link.txt");
+
+        let child = cs_dir.join("ChildDir");
+        fs::create_dir(&child).unwrap();
+        let different_child = cs_dir.join("childdir");
+        assert!(
+            !different_child.try_exists().unwrap(),
+            "test directory must actually enforce case-sensitive lookup"
+        );
+        assert!(!fs_targets_match(
+            &link,
+            &child.join("missing.txt"),
+            &different_child.join("missing.txt"),
+        ));
 
         // In an actual case-sensitive directory, tails with different casing must NOT match
         let actual_cs = cs_dir.join("MissingLeaf.txt");
@@ -2027,19 +2101,20 @@ mod tests {
 
     #[test]
     #[cfg(windows)]
+    #[ignore = "requires Windows ACL modification; run explicitly with --ignored --test-threads=1"]
     fn fs_targets_match_broken_link_rejects_permission_denied_ancestor() {
         let temp = crate::core::test_support::TestDir::new("targets-denied");
         let denied_dir = temp.path().join("DeniedDir");
         fs::create_dir_all(&denied_dir).unwrap();
 
-        let output = std::process::Command::new("icacls.exe")
-            .args([denied_dir.to_str().unwrap(), "/deny", "*S-1-1-0:(F)"])
-            .output();
-
-        let Ok(output) = output else { return };
-        if !output.status.success() {
-            return;
-        }
+        // Arm restoration before applying a deny ACE, including on assertion failure.
+        let mut acl_guard = DirectoryAclGuard::capture(&denied_dir);
+        run_windows_test_command(
+            std::process::Command::new("icacls.exe")
+                .arg(&denied_dir)
+                .args(["/deny", "*S-1-1-0:(F)"]),
+        )
+        .expect("must deny access for this explicitly requested test");
 
         let link = temp.path().join("link.txt");
         let actual = denied_dir.join("sub").join("missing.txt");
@@ -2050,12 +2125,24 @@ mod tests {
             .join("missing.txt");
         assert_ne!(actual, expected);
 
+        for target in [&actual, &expected] {
+            let error = target
+                .canonicalize()
+                .expect_err("test target must be inaccessible after applying the deny ACE");
+            assert_eq!(
+                error.kind(),
+                std::io::ErrorKind::PermissionDenied,
+                "test must exercise PermissionDenied for {}: {error}",
+                target.display(),
+            );
+        }
+
         let matched = fs_targets_match(&link, &actual, &expected);
 
-        // Restore permissions for clean removal by Drop
-        let _ = std::process::Command::new("icacls.exe")
-            .args([denied_dir.to_str().unwrap(), "/grant", "*S-1-1-0:(F)"])
-            .output();
+        acl_guard.restore().expect("must restore the original ACL");
+        denied_dir
+            .canonicalize()
+            .expect("test directory must be accessible after ACL restoration");
 
         assert!(!matched);
     }
