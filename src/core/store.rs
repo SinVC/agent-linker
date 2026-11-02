@@ -526,11 +526,12 @@ impl From<rusqlite::Error> for Error {
         if let rusqlite::Error::SqliteFailure(code, _) = &source {
             match code.code {
                 rusqlite::ErrorCode::ConstraintViolation
-                    if code.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE =>
+                    if code.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+                        || code.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY =>
                 {
                     return Self::Conflict {
                         message: format!(
-                            "name or default link destination already exists: {source}"
+                            "identifier, name, or default link destination already exists: {source}"
                         ),
                         path: None,
                         source: Some(source),

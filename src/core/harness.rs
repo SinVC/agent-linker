@@ -6,7 +6,7 @@ use crate::core::{
     },
     store::Store,
     symlink::LinkKind,
-    util::{timestamp, timestamp_nanos},
+    util::timestamp,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{
@@ -190,7 +190,7 @@ impl Store {
             {
                 return Err(Error::invalid_arguments(format!("harness mapping destination already exists: {link_text}")));
             }
-            let id = format!("mapping:{}:{}", harness_id, timestamp_nanos());
+            let id = random_mapping_id(connection, &harness_id)?;
             let now = timestamp();
             connection.execute(
                 "INSERT INTO harness_mappings(id,harness_id,source_path,link_path,link_kind,required,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,0,?6,?6)",
@@ -357,6 +357,12 @@ fn path_to_db_text(path: &Path, label: &str) -> Result<String> {
             "{label} must be valid UTF-8 to store in the global registry"
         ))
     })
+}
+
+fn random_mapping_id(connection: &Connection, harness_id: &str) -> Result<String> {
+    let random: String =
+        connection.query_row("SELECT lower(hex(randomblob(8)))", [], |r| r.get(0))?;
+    Ok(format!("map_{harness_id}_{random}"))
 }
 
 #[cfg(test)]
