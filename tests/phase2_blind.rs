@@ -179,7 +179,7 @@ fn config_is_removed_and_help_keeps_database_commands() {
 }
 
 #[test]
-fn migrate_creates_v3_seed_once_and_queries_leave_bytes_unchanged() {
+fn migrate_creates_v4_seed_once_and_queries_leave_bytes_unchanged() {
     let f = Fixture::new();
     f.migrate();
     {
@@ -187,7 +187,7 @@ fn migrate_creates_v3_seed_once_and_queries_leave_bytes_unchanged() {
         assert_eq!(
             c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            3
+            4
         );
         assert_eq!(count(&c, "harnesses"), 1);
         assert_eq!(count(&c, "harness_mappings"), 2);
@@ -242,7 +242,7 @@ fn migrate_creates_v3_seed_once_and_queries_leave_bytes_unchanged() {
 
 #[test]
 fn ordinary_commands_reject_older_and_newer_schema_without_mutation() {
-    for version in [2, 4] {
+    for version in [3, 5] {
         let f = Fixture::new();
         f.migrate();
         {
@@ -252,7 +252,7 @@ fn ordinary_commands_reject_older_and_newer_schema_without_mutation() {
         }
         let before = fs::read(f.db()).unwrap();
         let text = f.fail(&["harness", "list"]);
-        if version == 2 {
+        if version == 3 {
             assert!(has_case(&text, "db migrate"), "{text}");
         } else {
             assert!(
@@ -1010,7 +1010,7 @@ fn v1_and_v2_migration_preserve_identifiers_relations_values_and_unix_times() {
         assert_eq!(
             c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            3
+            4
         );
         let h: (String, i64, i64, i64) = c
             .query_row(

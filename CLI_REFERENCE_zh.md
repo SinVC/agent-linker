@@ -38,6 +38,9 @@
 
 ```text
 aglink init
+aglink init defaults list
+aglink init defaults add <item>
+aglink init defaults remove <item>
 aglink status [--json]
 aglink clean [--broken | --missing-source] [--dry-run]
 aglink doctor
@@ -45,6 +48,7 @@ aglink doctor
 
 - **`init`**：幂等初始化项目（不支持 `--dry-run`/`--force`）。创建缺失的空文件 `AGENTS.md` 及 `.agents/`、`.agents/skills/`（保留已有内容）；只读加载全局库中已启用 Harness 的映射并写入清单；缺库时使用同一内置 Claude 默认映射，不创建全局库（已是正确链接则跳过，源类型不符或目标冲突则报错）；在 `.gitignore` 中维护受管区块（写入 `.claude/`、`.agents/`）。
 - **`status [--json]`**：仅检查清单中的记录，不扫描未纳管链接，也不执行修复。`--json` 顶层含 `project_root`、`manifest_path`、`links`（每项含清单 `id`、`item_id`、`item_name`、`link_path`、`source_path`、`link_kind`［`file`/`directory`］、`provider_backend`、`status`）。
+- **默认初始化项**：`init` 先建立基础结构，再建立已启用 Harness 链接，最后按普通默认目标链接配置的 Skill/Resource。每个链接阶段整批预检并保存完成状态，后续阶段失败保留前面阶段。`init defaults` 是全局配置，无需项目；按名称或 ID 查询，add/remove 对已知项幂等。改名保留关联，注销级联清理配置；配置变化不主动修改项目，再次 init 补齐当前默认项并保留旧链接。来源失效或目标冲突明确报错。初始化和迁移没有技能名称特判。
 
 | `links[].status` | 含义 |
 | --- | --- |
@@ -123,9 +127,9 @@ aglink db check
 ```
 
 - **`db path`**：仅输出解析后的数据库路径及依据，不打开数据库。查询使用只读连接，不创建、迁移或补齐内置数据；缺库或旧 schema 提示运行 `aglink db migrate`，新 schema 提示升级程序。
-- **`db migrate`**：显式创建或升级到 Schema v3，迁移链和 Seed 整体事务提交，保留存量 ID 与引用。内置数据 INSERT OR IGNORE，不覆盖用户状态或时间。普通读写不负责初始化或迁移。
+- **`db migrate`**：显式创建或升级到 Schema v4，迁移链和 Seed 整体事务提交，保留存量 ID 与引用。内置数据 INSERT OR IGNORE，不覆盖用户状态或时间。普通读写不负责初始化或迁移。
 - **`db backup [文件路径]`**：只读打开已存在的源库，生成含已提交 WAL 数据的一致快照，保留源 schema。省略路径时仅 Windows 正常安装写入 `<installRoot>/backups/`，其他形态在数据库同目录生成 `agent-linker-backup-<纳秒时间戳>.db`；指定文件路径时自动创建父目录，目标已存在则报错。
-- **`db check`**：检查存在性、版本、五张核心表及 SQLite quick_check，再以不带 CREATE 的连接探测可写性；Harness 表为空也可健康。missing/schema_mismatch/read_only/locked_busy/invalid 返回非零，healthy_writable 返回 0；不建库、不迁移、不 Seed。
+- **`db check`**：检查存在性、版本、六张核心表及 SQLite quick_check，再以不带 CREATE 的连接探测可写性；Harness 表为空也可健康。missing/schema_mismatch/read_only/locked_busy/invalid 返回非零，healthy_writable 返回 0；不建库、不迁移、不 Seed。
 
 **数据库路径优先级**（文件名固定为 `agent-linker.db`）：
 1. 非空环境变量 `AGLINK_DATA_DIR` 指定目录（相对路径基于当前工作目录）。

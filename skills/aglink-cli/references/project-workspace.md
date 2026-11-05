@@ -14,6 +14,9 @@ aglink status [--json]
 
 ## 1. Initialize Project (`init`)
 
+- Initialization runs in order: real project scaffolding, enabled Harness compatibility links, then configured default Skill/Resource items. Each link phase preflights its batch; a later phase failure preserves completed earlier phases.
+- Manage the global default list with `aglink init defaults list`, `aglink init defaults add <item>`, and `aglink init defaults remove <item>` (registered name or ID). Add/remove are idempotent for known items. Renames preserve membership; unregistering removes it. Changing defaults does not unlink existing projects; rerunning `init` adds current defaults and retains old links. Missing sources and target conflicts fail explicitly.
+
 - Run `aglink init` in the project root before `link` if `.agents/links.toml` does not exist (`init` always targets CWD; no `--dry-run` or `--force`). A malformed manifest returns an error.
 - Idempotently creates missing `AGENTS.md` (empty file), `.agents/`, and `.agents/skills/` while preserving existing content.
 - Updates the `aglink` managed block in `.gitignore` (`.claude/`, `.agents/`).

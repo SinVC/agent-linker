@@ -29,8 +29,11 @@ export INSTALL_DIR="$FIXTURE/installed"
 export XDG_DATA_HOME="$FIXTURE/xdg"
 unset AGLINK_DATA_DIR
 ASSET=aglink-v0.0.0-smoke-x86_64-unknown-linux-gnu.tar.gz
+mkdir -p "$FIXTURE/package/skills/aglink-cli/references"
+printf '# Fixture bundled skill\n\nInstaller acceptance fixture.\n' > "$FIXTURE/package/skills/aglink-cli/SKILL.md"
+printf 'Fixture command reference\n' > "$FIXTURE/package/skills/aglink-cli/references/commands.md"
 make_archive() {
-  tar -czf "$FIXTURE/assets/$ASSET" -C "$FIXTURE/package" aglink
+  tar -czf "$FIXTURE/assets/$ASSET" -C "$FIXTURE/package" aglink skills
   (cd "$FIXTURE/assets" && sha256sum "$ASSET" > "$ASSET.sha256")
 }
 cp "$AGLINK_EXE" "$FIXTURE/package/aglink"
@@ -39,7 +42,7 @@ sh "$SCRIPT_DIR/install.sh"
 "$INSTALL_DIR/aglink" harness list | grep -q claude
 test -s "$XDG_DATA_HOME/agent-linker/agent-linker.db"
 CHECK_OUTPUT="$("$INSTALL_DIR/aglink" db check)"
-printf '%s\n' "$CHECK_OUTPUT" | grep -Eq '^Schema: 3 / latest 3$'
+printf '%s\n' "$CHECK_OUTPUT" | grep -Eq '^Schema: 4 / latest 4$'
 printf '%s\n' "$CHECK_OUTPUT" | grep -Eq '^Status: healthy_writable$'
 # Source/manual extraction follows the documented explicit initialization step.
 AGLINK_DATA_DIR="$FIXTURE/manual" "$AGLINK_EXE" db migrate
@@ -74,4 +77,4 @@ for phase in migrate check; do
   fi
   test "$(cat "$AGLINK_TEST_FAIL_MARKER")" = "$phase"
 done
-echo 'PASS: Unix installer schema v3 and ordinary first query, source/manual initialization, separate migrate/check failures'
+echo 'PASS: Unix installer schema v4 and ordinary first query, source/manual initialization, separate migrate/check failures'

@@ -52,8 +52,9 @@ jobs:
           set -euo pipefail
           mkdir -p dist/linux
           cp target/release/aglink dist/linux/aglink
+          cp -R skills dist/linux/skills
           chmod +x dist/linux/aglink
-          tar -C dist/linux -czf "dist/aglink-${{ steps.version.outputs.tag }}-x86_64-unknown-linux-gnu.tar.gz" aglink
+          tar -C dist/linux -czf "dist/aglink-${{ steps.version.outputs.tag }}-x86_64-unknown-linux-gnu.tar.gz" aglink skills
           (cd dist && sha256sum "aglink-${{ steps.version.outputs.tag }}-x86_64-unknown-linux-gnu.tar.gz" > "aglink-${{ steps.version.outputs.tag }}-x86_64-unknown-linux-gnu.tar.gz.sha256")
           cp packaging/unix/install.sh dist/aglink-installer.sh
           cp packaging/unix/uninstall.sh dist/aglink-uninstall.sh

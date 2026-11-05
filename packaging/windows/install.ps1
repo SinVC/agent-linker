@@ -3,6 +3,8 @@ param(
     [string] $Version = "latest",
     [string] $Repo = "winddxr/agent-linker",
     [string] $InstallDir = "",
+    [string] $PackagePath = "",
+    [switch] $SkipDatabaseSnapshot,
     [switch] $NoPath,
     [switch] $NoBroker
 )
@@ -53,6 +55,10 @@ if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
     Write-Warning 'Installer is already elevated; successful initialization does not verify ordinary-user data permissions.'
 }
 $legacyDb = Join-Path $env:LOCALAPPDATA "agent-linker\agent-linker.db"
+if ($PackagePath) {
+    $PackagePath = [IO.Path]::GetFullPath($PackagePath)
+    if ($Version -eq 'latest') { throw 'Specify -Version when installing a local -PackagePath' }
+}
 $tag = Get-ReleaseTag -RepoName $Repo -RequestedVersion $Version
 $plainVersion = if ($tag.StartsWith("v")) { $tag.Substring(1) } else { $tag }
 
@@ -77,8 +83,13 @@ New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $extractPath | Out-Null
 
 try {
-    Invoke-WebRequest -Uri "$baseUrl/$assetName" -OutFile $archivePath
-    Invoke-WebRequest -Uri "$baseUrl/$assetName.sha256" -OutFile $shaPath
+    if ($PackagePath) {
+        Copy-Item -LiteralPath $PackagePath -Destination $archivePath
+        Copy-Item -LiteralPath "$PackagePath.sha256" -Destination $shaPath
+    } else {
+        Invoke-WebRequest -Uri "$baseUrl/$assetName" -OutFile $archivePath
+        Invoke-WebRequest -Uri "$baseUrl/$assetName.sha256" -OutFile $shaPath
+    }
 
     $expected = ((Get-Content -LiteralPath $shaPath -Raw) -split "\s+")[0].ToLowerInvariant()
     $actual = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -125,11 +136,13 @@ try {
     $dataDir = Join-Path $installRoot 'data'
     $targetDb = Join-Path $dataDir 'agent-linker.db'
     try {
-        # An existing target is validated before any migration. Never overwrite a damaged target.
+        # Existing targets stay in place; snapshot validation is optional before migration.
         if (Test-Path -LiteralPath $targetDb) {
-            $env:AGLINK_DATA_DIR = $dataDir
-            & $exe db backup (Join-Path $tempRoot 'target-validation.db')
-            if ($LASTEXITCODE -ne 0) { throw 'Existing target database failed validation' }
+            if (-not $SkipDatabaseSnapshot) {
+                $env:AGLINK_DATA_DIR = $dataDir
+                & $exe db backup (Join-Path $tempRoot 'target-validation.db')
+                if ($LASTEXITCODE -ne 0) { throw 'Existing target database failed validation' }
+            }
         } elseif (Test-Path -LiteralPath $legacyDb -PathType Leaf) {
             $env:AGLINK_DATA_DIR = Split-Path -Parent $legacyDb
             & $exe db backup $targetDb
@@ -140,6 +153,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Database initialization failed' }
         & $exe db check
         if ($LASTEXITCODE -ne 0) { throw 'Database check failed' }
+        & (Join-Path $scriptDir 'configure-skills.ps1') -AglinkExe $exe -SkillsDir (Join-Path $extractPath 'skills') -DataDir $dataDir
         & $exe --verbose doctor
         # doctor also diagnoses the current project and optional Broker; it is informational here.
         $global:LASTEXITCODE = 0

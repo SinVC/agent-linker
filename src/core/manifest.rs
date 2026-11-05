@@ -16,11 +16,9 @@ use crate::core::{
         managed_relative_path_key, resolve_managed_project_path, validate_managed_relative_path,
         DbPathResolution,
     },
+    project_links::{self, LinkOptions, ProjectCtx},
     store::Store,
-    symlink::{
-        ensure_symlink, CreateSymlinkOptions, CreateSymlinkOutcome, LinkKind, SymlinkBackend,
-        SymlinkProvider,
-    },
+    symlink::{CreateSymlinkOutcome, LinkKind, SymlinkBackend, SymlinkProvider},
     util::timestamp,
 };
 
@@ -163,22 +161,49 @@ pub fn init_project_with_store(
     provider: &mut dyn SymlinkProvider,
     resolution: &DbPathResolution,
 ) -> Result<InitProjectReport> {
-    let mappings = match fs::metadata(&resolution.path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => default_init_mappings(),
+    let (mappings, items) = match fs::metadata(&resolution.path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            (default_init_mappings(), Vec::new())
+        }
         Err(error) => return Err(Error::io(&resolution.path, error)),
-        Ok(_) => Store::open_ro(resolution)?
-            .list_harnesses()?
-            .into_iter()
-            .filter(|harness| harness.enabled)
-            .flat_map(|harness| {
-                harness
-                    .mappings
-                    .into_iter()
-                    .map(move |mapping| mapping.for_project(&harness.name))
-            })
-            .collect(),
+        Ok(_) => {
+            let store = Store::open_ro(resolution)?;
+            let mappings = store
+                .list_harnesses()?
+                .into_iter()
+                .filter(|harness| harness.enabled)
+                .flat_map(|harness| {
+                    harness
+                        .mappings
+                        .into_iter()
+                        .map(move |mapping| mapping.for_project(&harness.name))
+                })
+                .collect();
+            (mappings, store.list_init_items()?)
+        }
     };
-    init_project_with_mappings(project_root, provider, &mappings)
+    let mut report = init_project_with_mappings(project_root, provider, &mappings)?;
+    if !items.is_empty() {
+        let outcomes = project_links::link_items(
+            &mut ProjectCtx {
+                root: project_root,
+                provider,
+            },
+            items,
+            LinkOptions::default(),
+            "init",
+        )?;
+        for outcome in outcomes {
+            report.created_paths.extend(outcome.created_dirs);
+            report.link_outcomes.push(InitLinkOutcome {
+                id: outcome.id,
+                source_path: outcome.source_path,
+                link_path: outcome.link_path,
+                outcome: outcome.outcome,
+            });
+        }
+    }
+    Ok(report)
 }
 
 pub fn init_project_with_mappings(
@@ -203,34 +228,18 @@ pub fn init_project_with_mappings(
         &mut report,
     )?;
 
-    let mut manifest = load_manifest(project_root)?;
-
-    ensure_harness_parent_dirs(project_root, mappings, &mut report)?;
+    let manifest = load_manifest(project_root)?;
     update_gitignore(project_root, &mut report)?;
-
-    for mapping in mappings {
-        let source = mapping.source_in(project_root)?;
-        let link = mapping.link_in(project_root)?;
-        let outcome = ensure_symlink(
-            provider,
-            &source,
-            &link,
-            mapping.link_kind,
-            CreateSymlinkOptions { force: false },
-        )?;
-
-        report.link_outcomes.push(InitLinkOutcome {
-            id: mapping.id.to_string(),
-            source_path: mapping.source_path.clone(),
-            link_path: mapping.link_path.clone(),
-            outcome,
-        });
-
-        manifest.upsert(record_from_mapping(mapping, provider.backend()));
-    }
-
-    manifest.validate()?;
     save_manifest(project_root, &manifest)?;
+    let (outcomes, created_dirs) = project_links::link_harnesses(
+        &mut ProjectCtx {
+            root: project_root,
+            provider,
+        },
+        mappings,
+    )?;
+    report.link_outcomes = outcomes;
+    report.created_paths.extend(created_dirs);
 
     Ok(report)
 }
@@ -321,30 +330,6 @@ fn validate_project_paths(project_root: &Path, manifest: &Manifest) -> Result<()
             resolve_managed_project_path(project_root, &record.source_path)?;
         }
     }
-    Ok(())
-}
-
-fn ensure_harness_parent_dirs(
-    project_root: &Path,
-    mappings: &[HarnessMapping],
-    report: &mut InitProjectReport,
-) -> Result<()> {
-    let mut parents = BTreeSet::new();
-    for mapping in mappings {
-        if let Some(parent) = mapping.link_path.parent() {
-            if parent
-                .components()
-                .any(|part| matches!(part, std::path::Component::Normal(_)))
-            {
-                parents.insert(parent.to_path_buf());
-            }
-        }
-    }
-
-    for parent in parents {
-        ensure_real_dir(project_root, &parent, report)?;
-    }
-
     Ok(())
 }
 
@@ -486,7 +471,7 @@ fn replace_or_append_managed_block(original: &str, block: &str) -> Result<String
     }
 }
 
-fn record_from_mapping(mapping: &HarnessMapping, backend: SymlinkBackend) -> LinkRecord {
+pub(super) fn record_from_mapping(mapping: &HarnessMapping, backend: SymlinkBackend) -> LinkRecord {
     let now = timestamp();
 
     LinkRecord {

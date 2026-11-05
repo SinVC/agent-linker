@@ -1,11 +1,15 @@
 //! Plan, validate and execute managed project link changes.
 use crate::core::{
     error::{Error, Result},
+    harness::HarnessMapping,
     linkable::{
         validate_optional_alias, validate_project_relative_target_dir, validate_resource_source,
         validate_skill_source, LinkableItem, LinkableItemType,
     },
-    manifest::{load_manifest, manifest_path, save_manifest, LinkOrigin, LinkRecord, Manifest},
+    manifest::{
+        load_manifest, manifest_path, record_from_mapping, save_manifest, InitLinkOutcome,
+        LinkOrigin, LinkRecord, Manifest,
+    },
     paths::{managed_relative_path_key, normalize_windows_path, resolve_managed_project_path},
     store::Store,
     symlink::{
@@ -29,6 +33,7 @@ pub struct LinkItemRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkItemReport {
+    pub id: String,
     pub project_root: PathBuf,
     pub manifest_path: PathBuf,
     pub item_name: String,
@@ -195,21 +200,51 @@ impl LinkPlan {
         link_name: Option<&str>,
         target_dir: Option<&Path>,
         opts: LinkOptions,
+        command: &str,
     ) -> Result<LinkItemReport> {
         validate_registered_source(&item)?;
         let link_path: PathBuf = project_link_path_for_item(&item, link_name, target_dir)?
             .components()
             .filter(|part| *part != std::path::Component::CurDir)
             .collect();
-        let key = managed_relative_path_key(&link_path);
-        let mut record_id = manifest_record_id(&item, &link_path);
+        let mut record = link_record_from_item(
+            &item,
+            &link_path,
+            ctx.provider.backend(),
+            &manifest_record_id(&item, &link_path),
+        );
+        record.created_by_command = command.to_string();
+        let (id, outcome, created_dirs) = self.add_link(ctx, record, opts)?;
+        Ok(LinkItemReport {
+            id,
+            project_root: ctx.root.to_path_buf(),
+            manifest_path: manifest_path(ctx.root),
+            item_name: item.name,
+            item_type: item.item_type,
+            source_path: item.source_path,
+            link_path,
+            outcome,
+            provider_backend: ctx.provider.backend(),
+            dry_run: opts.dry_run,
+            created_dirs,
+        })
+    }
+
+    fn add_link(
+        &mut self,
+        ctx: &ProjectCtx,
+        mut record: LinkRecord,
+        opts: LinkOptions,
+    ) -> Result<(String, CreateSymlinkOutcome, Vec<PathBuf>)> {
+        let link_path = &record.link_path;
+        let key = managed_relative_path_key(link_path);
         for existing in &self.manifest.links {
             let existing_key = managed_relative_path_key(&existing.link_path);
-            if existing.origin == LinkOrigin::Item
-                && existing.item_id == item.id
+            if existing.origin == record.origin
+                && existing.item_id == record.item_id
                 && existing_key == key
             {
-                record_id = existing.id.clone();
+                record.id = existing.id.clone();
                 continue;
             }
             if key == existing_key
@@ -223,8 +258,10 @@ impl LinkPlan {
                 )));
             }
         }
-        let absolute_link = resolve_managed_project_path(ctx.root, &link_path)?;
-        let dirs = missing_parent_dirs(ctx.root, &link_path)?;
+        let source = project_path(ctx.root, &record.source_path)?;
+        ctx.provider.validate_source(&source, record.link_kind)?;
+        let absolute_link = resolve_managed_project_path(ctx.root, link_path)?;
+        let dirs = missing_parent_dirs(ctx.root, link_path)?;
         let created_dirs = dirs
             .into_iter()
             .filter(
@@ -237,41 +274,40 @@ impl LinkPlan {
                 },
             )
             .collect();
-        let state =
-            ctx.provider
-                .link_status(&item.source_path, &absolute_link, item.source_kind)?;
+        let state = ctx
+            .provider
+            .link_status(&source, &absolute_link, record.link_kind)?;
         let outcome = evaluate_create(
             &state,
             true,
-            &item.source_path,
+            &source,
             &absolute_link,
             ctx.provider.backend(),
             CreateSymlinkOptions { force: opts.force },
         )?;
         self.changes.push(PlannedChange::Create {
-            source: item.source_path.clone(),
+            source,
             link: absolute_link,
-            kind: item.source_kind,
+            kind: record.link_kind,
             outcome,
         });
-        self.manifest.upsert(link_record_from_item(
-            &item,
-            &link_path,
-            ctx.provider.backend(),
-            &record_id,
-        ));
-        Ok(LinkItemReport {
-            project_root: ctx.root.to_path_buf(),
-            manifest_path: manifest_path(ctx.root),
-            item_name: item.name,
-            item_type: item.item_type,
-            source_path: item.source_path,
-            link_path,
-            outcome,
-            provider_backend: ctx.provider.backend(),
-            dry_run: opts.dry_run,
-            created_dirs,
-        })
+        if outcome == CreateSymlinkOutcome::AlreadyCorrect {
+            if let Some(existing) = self
+                .manifest
+                .links
+                .iter()
+                .find(|entry| entry.id == record.id)
+            {
+                record.created_at = existing.created_at;
+                record.updated_at = existing.updated_at;
+                if record != *existing {
+                    record.updated_at = timestamp();
+                }
+            }
+        }
+        let id = record.id.clone();
+        self.manifest.upsert(record);
+        Ok((id, outcome, created_dirs))
     }
 
     fn remove_selected(
@@ -319,6 +355,7 @@ pub fn link_item(
         req.link_name_override.as_deref(),
         req.target_dir_override.as_deref(),
         opts,
+        "link",
     )?;
     plan.execute(ctx, opts.dry_run)?;
     Ok(report)
@@ -331,12 +368,7 @@ pub fn link_group(
     opts: LinkOptions,
 ) -> Result<LinkGroupReport> {
     let group = store.show_group(group)?;
-    let mut plan = LinkPlan::new(ctx.root)?;
-    let mut reports = Vec::new();
-    for item in group.items {
-        reports.push(plan.add_item(ctx, item, None, None, opts)?);
-    }
-    plan.execute(ctx, opts.dry_run)?;
+    let reports = link_items(ctx, group.items, opts, "link")?;
     Ok(LinkGroupReport {
         project_root: ctx.root.to_path_buf(),
         manifest_path: manifest_path(ctx.root),
@@ -344,6 +376,44 @@ pub fn link_group(
         reports,
         dry_run: opts.dry_run,
     })
+}
+
+pub(super) fn link_items(
+    ctx: &mut ProjectCtx,
+    items: Vec<LinkableItem>,
+    opts: LinkOptions,
+    command: &str,
+) -> Result<Vec<LinkItemReport>> {
+    let mut plan = LinkPlan::new(ctx.root)?;
+    let mut reports = Vec::new();
+    for item in items {
+        reports.push(plan.add_item(ctx, item, None, None, opts, command)?);
+    }
+    plan.execute(ctx, opts.dry_run)?;
+    Ok(reports)
+}
+
+pub(super) fn link_harnesses(
+    ctx: &mut ProjectCtx,
+    mappings: &[HarnessMapping],
+) -> Result<(Vec<InitLinkOutcome>, Vec<PathBuf>)> {
+    let mut plan = LinkPlan::new(ctx.root)?;
+    let mut reports = Vec::new();
+    let mut created_dirs = Vec::new();
+    for mapping in mappings {
+        mapping.source_in(ctx.root)?;
+        let record = record_from_mapping(mapping, ctx.provider.backend());
+        let (id, outcome, dirs) = plan.add_link(ctx, record, LinkOptions::default())?;
+        created_dirs.extend(dirs);
+        reports.push(InitLinkOutcome {
+            id,
+            source_path: mapping.source_path.clone(),
+            link_path: mapping.link_path.clone(),
+            outcome,
+        });
+    }
+    plan.execute(ctx, false)?;
+    Ok((reports, created_dirs))
 }
 
 pub fn status(ctx: &mut ProjectCtx) -> Result<StatusReport> {

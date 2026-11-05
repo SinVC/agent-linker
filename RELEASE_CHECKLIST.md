@@ -27,6 +27,8 @@ cargo run --locked -- --help
 
 - Push a version tag such as `v0.1.0`; GitHub Actions builds and publishes release assets.
 - Confirm Windows release archives include `broker/win-symlinks-broker.exe`.
+- Confirm Windows/Linux archives contain the complete `skills/` tree, including `aglink-cli` references. Normal installs must register it from `data/skills/aglink-cli` and add it to init defaults; upgrades must preserve its ID and a user-removed default.
+- Run portable `scripts/setup-portable.ps1` after extraction and verify registration uses the extracted location; the packaged database must not contain staging source paths.
 - Confirm Windows release archives include `install-receipt.json` and do not include `VERSION.json`.
 - Confirm Windows release archives do not include `LICENSES/` or `THIRD_PARTY_NOTICES.md`.
 - Confirm `aglink-v<version>-x86_64-pc-windows-msvc-portable.zip` contains an initialized `agent-linker.db` next to `aglink.exe`, and queries work without a first-run migration.
@@ -78,7 +80,7 @@ Verify `aglink db path` for:
 - `AGLINK_DATA_DIR` override.
 - Portable mode by placing `agent-linker.db` next to the executable and leaving `AGLINK_DATA_DIR` unset.
 
-The database unit tests cover platform defaults, receipt precedence, overrides, portable and Cargo layouts, missing/old/new schemas, read-only access, and WAL snapshots. Still smoke-test real CLI output on any platform included in release notes. Portable staging and normal install/upgrade must explicitly migrate to schema v3 before the first query. Nonhealthy db check must stop installation success. Unix installers must initialize successfully and propagate initialization failure; source/manual quick starts must explicitly run `db migrate`. MSIX package identity has not been verified by these entry-point checks.
+The database unit tests cover platform defaults, receipt precedence, overrides, portable and Cargo layouts, missing/old/new schemas, read-only access, and WAL snapshots. Still smoke-test real CLI output on any platform included in release notes. Portable staging and normal install/upgrade must explicitly migrate to schema v4 before the first query. Nonhealthy db check must stop installation success. Unix installers must initialize successfully and propagate initialization failure; source/manual quick starts must explicitly run `db migrate`. MSIX package identity has not been verified by these entry-point checks.
 
 ## Temporary Project Self-Test
 

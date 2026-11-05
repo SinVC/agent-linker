@@ -1,10 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.1.1
 
 - Renamed the `framework` command to `harness` with no compatibility alias; updated the Rust module, reports, diagnostics, and current documentation to use Harness.
 - Clarified that `claude` identifies Claude Code; harness settings control compatibility definitions, not tool processes.
 - Preserved existing SQLite tables, manifest schema, IDs, enabled flags, and custom mappings across the terminology change.
+- Added init defaults configuration (`aglink init defaults list|add|remove`).
+- Added bilingual GitHub-style README and streamlined documentation navigation.
 
 ## 0.1.0 - MVP release candidate
 

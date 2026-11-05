@@ -11,7 +11,8 @@ use serde::Serialize;
 use crate::{
     commands::{
         self, CleanCommand, Command, CommandReport, DbCommand, DoctorCommand, GroupCommand,
-        HarnessCommand, LinkCommand, LinkableCommand, StatusCommand, UnlinkCommand, UnlinkTarget,
+        HarnessCommand, InitDefaultsCommand, LinkCommand, LinkableCommand, StatusCommand,
+        UnlinkCommand, UnlinkTarget,
     },
     core::{
         error::Error,
@@ -40,7 +41,10 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum CliCommand {
-    Init,
+    Init {
+        #[command(subcommand)]
+        command: Option<CliInitCommand>,
+    },
     Db {
         #[command(subcommand)]
         command: CliDbCommand,
@@ -67,6 +71,22 @@ enum CliCommand {
     Status(CliStatusArgs),
     Clean(CliCleanArgs),
     Doctor,
+}
+
+#[derive(Debug, Subcommand)]
+enum CliInitCommand {
+    #[command(about = "Configure registered items linked during project initialization")]
+    Defaults {
+        #[command(subcommand)]
+        command: CliInitDefaultsCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum CliInitDefaultsCommand {
+    List,
+    Add { item: String },
+    Remove { item: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -340,7 +360,14 @@ fn parse_error_exit_code(error: &clap::Error) -> ExitCode {
 fn command_from_cli(cli: Cli) -> Command {
     let verbose = cli.verbose;
     match cli.command {
-        CliCommand::Init => Command::Init,
+        CliCommand::Init { command: None } => Command::Init,
+        CliCommand::Init {
+            command: Some(CliInitCommand::Defaults { command }),
+        } => Command::InitDefaults(match command {
+            CliInitDefaultsCommand::List => InitDefaultsCommand::List,
+            CliInitDefaultsCommand::Add { item } => InitDefaultsCommand::Add { item },
+            CliInitDefaultsCommand::Remove { item } => InitDefaultsCommand::Remove { item },
+        }),
         CliCommand::Db { command } => Command::Db(match command {
             CliDbCommand::Path => DbCommand::Path,
             CliDbCommand::Migrate => DbCommand::Migrate,
@@ -517,6 +544,21 @@ fn report_lines(report: &CommandReport, verbose: bool) -> Vec<String> {
             }
             lines
         }
+        CommandReport::InitDefaultsList(items) => {
+            if items.is_empty() {
+                vec!["No init default items".to_string()]
+            } else {
+                items
+                    .iter()
+                    .map(|item| format!("{}\t{}\t{}", item.id, item.name, item.item_type))
+                    .collect()
+            }
+        }
+        CommandReport::InitDefaultUpdated { item, enabled } => vec![format!(
+            "{} init default `{}`",
+            if *enabled { "Added" } else { "Removed" },
+            item.name
+        )],
         CommandReport::DbPath(resolution) => vec![
             format!("Path: {}", resolution.path.display()),
             format!("Reason: {}", resolution.reason.as_str()),

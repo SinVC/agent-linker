@@ -41,7 +41,7 @@ function Remove-OverrideDatabase([string] $Directory) {
         if ((Test-Path -LiteralPath $cursor) -and ((Get-Item -LiteralPath $cursor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "Refusing purge through reparse point: $cursor" }
         $cursor = Split-Path -Parent $cursor
     }
-    foreach ($name in @('agent-linker.db', 'agent-linker.db-journal', 'agent-linker.db-wal', 'agent-linker.db-shm')) {
+    foreach ($name in @('agent-linker.db', 'agent-linker.db-journal', 'agent-linker.db-wal', 'agent-linker.db-shm', '.aglink-cli-configured')) {
         $file = Join-Path $full $name
         if (Test-Path -LiteralPath $file -PathType Leaf) { Remove-Item -LiteralPath $file -Force }
     }

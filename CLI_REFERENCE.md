@@ -38,6 +38,9 @@
 
 ```text
 aglink init
+aglink init defaults list
+aglink init defaults add <item>
+aglink init defaults remove <item>
 aglink status [--json]
 aglink clean [--broken | --missing-source] [--dry-run]
 aglink doctor
@@ -45,6 +48,7 @@ aglink doctor
 
 - **`init`**: Idempotently scaffolds the current project (no `--dry-run` or `--force`). Creates missing `AGENTS.md` (empty file), `.agents/`, and `.agents/skills/` (preserving existing content); reads enabled harness mappings from the initialized global database and records created links in the manifest (when the database is missing, falls back to the same built-in Claude mappings without initializing it) (skipping existing valid symlinks, failing on mismatched source types or target conflicts); updates the `aglink` managed block in `.gitignore` (`.claude/`, `.agents/`).
 - **`status [--json]`**: Inspects only manifest entries without scanning for untracked symlinks or repairing links. `--json` outputs `project_root`, `manifest_path`, and `links` (each containing manifest `id`, `item_id`, `item_name`, `link_path`, `source_path`, `link_kind` [`file`/`directory`], `provider_backend`, and `status`).
+- **Init defaults**: After scaffolding and enabled Harness links, `init` links configured Skill/Resource items using their ordinary default destinations. Each link phase preflights its full batch and saves its completed state; a later phase failure retains earlier stages. `init defaults` manages global settings by registered name or ID, without requiring a project. Add/remove are idempotent for known items. Renames preserve membership; unregistering cascades removal. Configuration changes do not alter projects; another `init` adds current defaults and retains old links. Missing sources or conflicts fail explicitly. No skill name is hardcoded in initialization or migration.
 
 | `links[].status` | Description |
 | --- | --- |
@@ -123,9 +127,9 @@ aglink db check
 ```
 
 - **`db path`**: Prints the resolved database path and selection reason without opening the database. Queries use read-only connections without creation, migration, or seeding. Missing/old databases require `aglink db migrate`; newer schemas require upgrading aglink.
-- **`db migrate`**: Explicitly initializes or upgrades to schema v3 in one transaction, preserving existing IDs and relations. Built-in seed uses INSERT OR IGNORE and preserves user state and timestamps. Ordinary reads and writes never initialize or migrate.
+- **`db migrate`**: Explicitly initializes or upgrades to schema v4 in one transaction, preserving existing IDs and relations. Built-in seed uses INSERT OR IGNORE and preserves user state and timestamps. Ordinary reads and writes never initialize or migrate.
 - **`db backup [file-path]`**: Opens an existing source read-only and writes a consistent SQLite snapshot, including committed WAL data, without changing the source schema. Defaults to `agent-linker-backup-<unix-nanos>.db` in `<installRoot>/backups/` for normal Windows installs, or in the database directory for other modes. An explicit relative or absolute path creates missing parent directories and fails if the destination exists.
-- **`db check`**: Checks existence, schema version, all five core tables, and SQLite quick_check, then probes writability without CREATE. Empty harness tables can be healthy. Reports missing/schema_mismatch/read_only/locked_busy/invalid with nonzero exit status; healthy_writable exits 0. Does not initialize, migrate, or seed.
+- **`db check`**: Checks existence, schema version, all six core tables, and SQLite quick_check, then probes writability without CREATE. Empty harness tables can be healthy. Reports missing/schema_mismatch/read_only/locked_busy/invalid with nonzero exit status; healthy_writable exits 0. Does not initialize, migrate, or seed.
 
 **Database Path Resolution Order** (filename is always `agent-linker.db`):
 1. Directory in non-empty `AGLINK_DATA_DIR` (relative paths resolved against the working directory).

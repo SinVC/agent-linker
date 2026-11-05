@@ -11,6 +11,7 @@
 - 维护 `.agents/links.toml`。
 - 维护 `.gitignore` 中的 aglink managed block。
 - 保证重复执行幂等且不覆盖用户真实文件或目录。
+- 按基础结构、Harness 链接、默认注册项链接三个阶段执行；后两阶段分别复用共享 LinkPlan 整批预检、执行及保存。后续阶段失败保留已完成阶段，不承诺跨阶段回滚。
 
 ## 架构约束
 
@@ -61,6 +62,8 @@ manifest 至少记录：
 - Harness 基础设施使用 `origin = "harness"`，注册项使用 `origin = "item"`；item 不持有或写出 Harness 名称。旧 `framework_name = "registry"` 推断为 item，其余旧 Harness 条目推断为 harness；旧 `scope` 可读取但不再写出，ID、路径和时间保留。
 - `init` 对已初始化全局库只读加载已启用 Harness 映射；缺库时使用同一 builtin_harnesses 定义的 Claude 默认映射，不创建目录/库、不迁移或 Seed；旧 schema 等其他错误正常返回。无启用 Harness 时不强制恢复 Claude。
 - mapping 复用受控项目路径、Symlink Core 和 Manifest 保存入口；不自动创建任意 mapping source。全局启停和 mapping 变更不反向更改已有项目。
+- Harness 阶段之后按 `init_items` 中的稳定 ID 加载 Skill/Resource，使用普通 link 的来源校验、默认目标、冲突规则和 manifest 身份；没有技能名称特判。无库时默认项为空，配置项来源失效或冲突明确报错。
+- `init defaults list/add/remove` 只管理全局默认项关联；add/remove 幂等，未知注册项报错。配置改变不主动更改项目；重复 init 补齐当前默认项，保留之前已管理但不再默认的链接。
 - Manifest 时间使用 i64 Unix 秒并写为整数，旧 unix:<seconds> 字段仍可读。
 - manifest 只记录 `aglink` 创建或接管管理的 symlink。
 - manifest 支持 `status`、`unlink`、`clean`、审计和恢复。

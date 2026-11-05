@@ -19,6 +19,7 @@ use crate::core::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Init,
+    InitDefaults(InitDefaultsCommand),
     Db(DbCommand),
     Harness(HarnessCommand),
     Skill(LinkableCommand),
@@ -29,6 +30,13 @@ pub enum Command {
     Status(StatusCommand),
     Clean(CleanCommand),
     Doctor(DoctorCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InitDefaultsCommand {
+    List,
+    Add { item: String },
+    Remove { item: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,6 +151,11 @@ pub struct DoctorCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandReport {
     Init(InitProjectReport),
+    InitDefaultsList(Vec<LinkableItem>),
+    InitDefaultUpdated {
+        item: LinkableItem,
+        enabled: bool,
+    },
     DbPath(DbPathResolution),
     DbMigrate(MigrationReport),
     DbBackup(DbBackupReport),
@@ -204,6 +217,7 @@ pub fn run(command: Command) -> Result<CommandReport> {
                 &resolution,
             )?))
         }
+        Command::InitDefaults(command) => run_init_defaults(command),
         Command::Db(command) => run_db(command),
         Command::Harness(command) => run_harness(command),
         Command::Skill(command) => run_linkable(command, LinkableItemType::Skill),
@@ -244,6 +258,25 @@ pub fn run(command: Command) -> Result<CommandReport> {
             };
             Ok(CommandReport::Doctor(report))
         }
+    }
+}
+
+fn run_init_defaults(command: InitDefaultsCommand) -> Result<CommandReport> {
+    let resolution = paths::resolve_database_path()?;
+    let store = match command {
+        InitDefaultsCommand::List => Store::open_ro(&resolution)?,
+        _ => Store::open_rw(&resolution)?,
+    };
+    match command {
+        InitDefaultsCommand::List => Ok(CommandReport::InitDefaultsList(store.list_init_items()?)),
+        InitDefaultsCommand::Add { item } => Ok(CommandReport::InitDefaultUpdated {
+            item: store.add_init_item(&item)?,
+            enabled: true,
+        }),
+        InitDefaultsCommand::Remove { item } => Ok(CommandReport::InitDefaultUpdated {
+            item: store.remove_init_item(&item)?,
+            enabled: false,
+        }),
     }
 }
 

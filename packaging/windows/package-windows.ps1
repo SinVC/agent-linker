@@ -71,6 +71,9 @@ Copy-Item -Path (Join-Path $brokerPath "*") -Destination (Join-Path $stageRoot "
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "install-broker.ps1") -Destination (Join-Path $stageRoot "scripts")
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "uninstall-broker.ps1") -Destination (Join-Path $stageRoot "scripts")
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "maintain-install.ps1") -Destination (Join-Path $stageRoot "scripts")
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'configure-skills.ps1') -Destination (Join-Path $stageRoot 'scripts')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'setup-portable.ps1') -Destination (Join-Path $stageRoot 'scripts')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\..\skills') -Destination (Join-Path $stageRoot 'skills') -Recurse
 
 if ($Portable) {
     $previousDataDir = $env:AGLINK_DATA_DIR
@@ -113,6 +116,8 @@ This package contains aglink.exe and the required WinSymlinksBroker runtime.
 
 For a normal install, prefer the release asset aglink-installer.ps1.
 For portable mode, keep agent-linker.db next to aglink.exe.
+After extracting a portable package to its final location, run scripts\setup-portable.ps1
+to register the bundled skills and configure the init defaults.
 
 Windows symlink operations require the machine-level WinSymlinksBroker service.
 Use scripts\install-broker.ps1 from an elevated PowerShell session if needed.

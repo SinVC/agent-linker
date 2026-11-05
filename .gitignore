@@ -7,6 +7,5 @@ docs/prompt-temp.md
 
 # BEGIN aglink managed
 .claude/
-.agents/skills/
-.agents/links.toml
+.agents/
 # END aglink managed

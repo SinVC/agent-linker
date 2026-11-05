@@ -43,7 +43,7 @@ try {
     $env:AGLINK_DATA_DIR = $null
     $portable = Join-Path $assets 'stage-windows-portable\aglink.exe'
     Assert ((Invoke-Cli $portable @('harness','list')).Contains('claude')) 'Portable first query failed'
-    Assert ((Invoke-Cli $portable @('db','check')) -match 'Schema:\s+3\s+/\s+latest\s+3') 'Portable package did not contain healthy schema v3'
+    Assert ((Invoke-Cli $portable @('db','check')) -match 'Schema:\s+4\s+/\s+latest\s+4') 'Portable package did not contain healthy schema v4'
 
     # A test-only executable forwards all normal commands to the real CLI, then
     # injects one selected native failure during installation. No product script
@@ -126,7 +126,8 @@ exit $LASTEXITCODE
     $exe = Join-Path $installRoot 'bin\aglink.exe'
     $database = Join-Path $installRoot 'data\agent-linker.db'
     Assert ((Invoke-Cli $exe @('db','path')).Contains($database)) 'Receipt did not resolve installation data'
-    Assert ((Invoke-Cli $exe @('db','check')) -match 'Schema:\s+3\s+/\s+latest\s+3') 'Installed database is not healthy schema v3'
+    Assert ((Invoke-Cli $exe @('db','check')) -match 'Schema:\s+4\s+/\s+latest\s+4') 'Installed database is not healthy schema v4'
+    Assert (Test-Path -LiteralPath (Join-Path $installRoot 'data\.aglink-cli-configured')) 'First install did not save bundled-skill configuration marker'
     Assert ((Invoke-Cli $exe @('group','list')).Contains('legacy-fixture')) 'Legacy import lost records'
     Assert ((Get-FileHash (Join-Path $env:LOCALAPPDATA 'agent-linker\agent-linker.db')).Hash -eq $legacyHash) 'Legacy source changed'
     $env:LOCALAPPDATA = Join-Path $fixture 'different-appdata'
@@ -167,6 +168,8 @@ exit $LASTEXITCODE
     & (Join-Path $PSScriptRoot 'uninstall.ps1') -InstallDir $installRoot
     Assert (-not (Test-Path -LiteralPath $exe)) 'Uninstall kept CLI'
     Assert (Test-Path -LiteralPath $database) 'Uninstall deleted database'
+    Assert (Test-Path -LiteralPath (Join-Path $installRoot 'data\.aglink-cli-configured')) 'Ordinary uninstall deleted bundled-skill configuration marker'
+    Assert (Test-Path -LiteralPath (Join-Path $installRoot 'data\skills\aglink-cli\SKILL.md')) 'Ordinary uninstall deleted retained skills'
     Assert (Test-Path -LiteralPath (Join-Path $installRoot 'scripts\uninstall-broker.ps1')) 'Uninstall deleted retained Broker script'
     Assert (Test-Path -LiteralPath (Join-Path $installRoot 'broker')) 'Uninstall deleted retained Broker directory'
     Assert (@(Get-ChildItem -LiteralPath (Join-Path $installRoot 'backups') -Filter '*.db').Count -eq 1) 'Uninstall deleted backup'
@@ -174,6 +177,8 @@ exit $LASTEXITCODE
     Set-Content -LiteralPath (Join-Path $installRoot 'data\unknown.txt') -Value 'preserve'
     & (Join-Path $PSScriptRoot 'uninstall.ps1') -InstallDir $installRoot -Purge
     Assert (-not (Test-Path -LiteralPath $database)) 'Purge kept installation database'
+    Assert (-not (Test-Path -LiteralPath (Join-Path $installRoot 'data\.aglink-cli-configured'))) 'Purge kept bundled-skill configuration marker'
+    Assert (Test-Path -LiteralPath (Join-Path $installRoot 'data\skills\aglink-cli\SKILL.md')) 'Purge deleted retained skills'
     Assert (Test-Path -LiteralPath (Join-Path $installRoot 'data\unknown.txt')) 'Purge deleted unknown content'
     Assert (@(Get-ChildItem -LiteralPath (Join-Path $installRoot 'backups') -Filter '*.db').Count -eq 0) 'Purge kept generated backups'
     # Corrupt targets must cause a failing installer and remain byte-for-byte intact.
@@ -183,7 +188,7 @@ exit $LASTEXITCODE
     try { & (Join-Path $PSScriptRoot 'install.ps1') -Version '0.0.0-smoke' -InstallDir $installRoot -NoPath -NoBroker } catch { $failed = $true }
     Assert $failed 'Installer ignored corrupt database'
     Assert ((Get-FileHash -LiteralPath $database).Hash -eq $badHash) 'Installer overwrote corrupt target'
-    Write-Host "PASS: portable schema v3 and ordinary first query, import, override restore, receipt path, backup, upgrade, uninstall, purge, initialization failure, injected migrate/check failures; fixture=$installRoot"
+    Write-Host "PASS: portable schema v4 and ordinary first query, import, override restore, receipt path, backup, upgrade, uninstall, purge, initialization failure, injected migrate/check failures; fixture=$installRoot"
 } finally {
     if ($fixtureLocationPushed) { Pop-Location }
     $env:AGLINK_DATA_DIR = $savedData

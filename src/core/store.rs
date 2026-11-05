@@ -11,7 +11,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
-const LATEST_SCHEMA_VERSION: u32 = 3;
+const LATEST_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationReport {
@@ -165,6 +165,7 @@ pub fn check_database(resolution: &DbPathResolution) -> Result<DbCheckReport> {
                 "linkable_items",
                 "groups",
                 "group_items",
+                "init_items",
             ] {
                 let exists: bool = connection.query_row(
                     "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
@@ -401,6 +402,14 @@ fn migrate_connection(connection: &Connection, current_version: u32) -> Result<(
 
     if current_version < 3 {
         migrate_v3(connection)?;
+    }
+    if current_version < 4 {
+        connection.execute_batch(
+            "CREATE TABLE init_items (
+                item_id TEXT PRIMARY KEY NOT NULL REFERENCES linkable_items(id) ON DELETE CASCADE
+             );
+             PRAGMA user_version = 4;",
+        )?;
     }
     Ok(())
 }

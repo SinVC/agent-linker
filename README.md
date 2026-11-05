@@ -1,102 +1,122 @@
-# Agent Linker (aglink)
+<div align="center">
 
-**Agent Linker** (`aglink`) 是一个基于 Rust 开发的 CLI 工具，专为 AI Agent 的指令、技能 (Skills) 和资源 (Resources) 提供基于受控 Symlink (符号链接) 的管理方案。
+# Agent Linker (`aglink`)
 
-通过构建中心化的 Agent 资源仓库，并将它们安全、高效地链接到各个独立的工程目录中，Agent Linker 帮助开发者轻松实现跨项目的上下文同步与 Harness 兼容。
+**Manage AI Agent instructions, skills, and resources across projects with safe, controlled symbolic links.**
 
-## 🌟 Advantages (优势)
+[![Release](https://img.shields.io/github/v/release/winddxr/agent-linker?color=blue)](https://github.com/winddxr/agent-linker/releases)
+[![Rust](https://img.shields.io/badge/rust-2021%20edition-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-green.svg)](LICENSE-MIT)
+[![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20macos-lightgrey.svg)]()
 
-- **Safety First (安全第一)**: 严格区分真实文件与符号链接。程序永远不会覆盖或删除用户的真实文件与目录。即便在使用 `--force` 时，也仅限于替换错误的符号链接。
-- **Cross-platform Consistency (跨平台一致性)**: 在 Linux / macOS 上使用原生 Symlink；在 Windows 上提供专属 Broker 服务机制，彻底告别频繁的 UAC 提权弹窗。
-- **Centralized Management (中心化管理)**: 全局使用 SQLite 存储 Registry、Harness 和 Group 数据，支持按分组管理技能与资源，一处修改，处处生效。
-- **Harness Adapter (兼容适配)**: 管理 Claude Code 等 Harness 的路径约定；`init` 只读消费全局已启用 Harness 的映射；缺库时使用内置 Claude 默认映射，不创建全局库。
-- **High Performance (高性能)**: 基于 Rust 构建，操作幂等，执行极速。
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-## 🎯 Significance (意义)
+</div>
 
-随着 AI Agent 技术的普及，开发者通常需要在多个项目之间共享相同的提示词 (Prompts)、脚本技能或背景知识文档。传统做法往往依赖复制粘贴，导致版本碎片化，更新极其痛苦。
+---
 
-**Agent Linker** 的诞生正是为了解决这一痛点：
-1. **Definition (定义) 统一**: 统一提供全局的 Skill 与 Resource 抽象标准，构建专属的 AI 知识库。
-2. **零冗余**: 利用操作系统的符号链接特性，实现多工程复用而不在磁盘上产生副本。
-3. **消除 Windows 权限痛点**: 长期以来，Windows 下创建符号链接需要管理员权限，破坏了自动化的流畅体验。本项目结合专用的本地服务进程，为 Windows 开发者带来了丝滑的链接体验。
+### Why Agent Linker?
 
-## 📦 Installation & Configuration (安装配置)
+Modern AI coding agents (Claude Code, Cursor, Antigravity, Windsurf) rely heavily on tailored instructions (`AGENTS.md`), specialized workflows (`SKILL.md`), and shared reference documentation. As you work across dozens of repositories, copying and pasting these assets creates fragmented knowledge, version drift, and maintenance headaches.
 
-当前 MVP 版本：`0.1.0`。发布前检查清单见 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)，变更记录见 [CHANGELOG.md](CHANGELOG.md)。
+**Agent Linker** (`aglink`) treats AI skills and resources like system packages—centrally registered, safely mounted via OS symlinks, and declaratively tracked per project:
 
-### 1. Release 安装 (推荐)
+- ⚡ **Zero Duplication, Instant Updates**: Register skills and resources once in a central registry. Link them into any workspace without disk bloat—updates to source skills apply across all linked projects immediately.
+- 🛡️ **Ironclad File Safety**: Strict safety boundaries. `aglink` never overwrites, moves, or deletes real files or directories. Even with `--force`, it only replaces symlinks pointing to wrong targets.
+- 🪟 **Frictionless Windows Experience**: No developer mode hacks or repetitive UAC administrator prompts. `aglink` integrates with a dedicated background broker (`WinSymlinksBroker`) for seamless, unprivileged symlink creation on Windows.
+- 🔌 **Universal Harness Compatibility**: Standardize on canonical workspace files (`AGENTS.md`, `.agents/skills/`) while automatically projecting compatibility symlinks for host agents (e.g. Claude Code's `.claude/`).
+- 📋 **Auditable & Declarative**: Every linked item is recorded in a lightweight project manifest (`.agents/links.toml`), with runtime health verified via `aglink doctor`.
 
-Linux:
+---
 
+## 30-Second Mental Model
+
+```text
+[ Global SQLite Registry ]
+  ├── Skill: aglink-cli  ──┐
+  └── Resource: rules.md ──┼──> aglink link ──> [ Workspace: .agents/links.toml ]
+                           │                        ├── .agents/skills/aglink-cli -> ...
+                           │                        ├── AGENTS.md (canonical source)
+                           │                        └── .claude/config.json -> ... (Harness link)
+```
+
+---
+
+## 🚀 Quick Start
+
+### 1. Installation
+
+**Linux / macOS:**
 ```bash
 curl -fsSL https://github.com/winddxr/agent-linker/releases/latest/download/aglink-installer.sh | sh
 ```
 
-Windows:
-
+**Windows (PowerShell):**
 ```powershell
 irm https://github.com/winddxr/agent-linker/releases/latest/download/aglink-installer.ps1 | iex
 ```
 
-Windows 单用户安装默认使用 `C:\Program Files\aglink`（支持 `-InstallDir`）：`bin/` 保存程序，`data/` 保存数据库及 SQLite 日志，`backups/` 保存默认备份。安装器只对保护目录写入、数据目录赋权及必要的 Broker 安装提权；用户 PATH、旧库快照导入和数据库初始化由外层用户进程执行。已有旧默认库会在新目标尚不存在时导入并保留原库；升级保留数据与备份。portable zip 携带已初始化的同目录数据库。
-
-卸载:
-
-```powershell
-irm https://github.com/winddxr/agent-linker/releases/latest/download/aglink-uninstall.ps1 | iex
-```
-
-默认卸载保留数据库、备份及共享 Broker 文件与维护脚本；`-Purge` 清理本安装的已知数据库文件与默认备份，`-RemoveBroker` 单独控制服务卸载。自定义数据覆盖目录只清理已知 SQLite 文件，保留未知内容。
-
-### 2. 从源码安装
-
-确保你的系统已安装 [Rust 与 Cargo](https://rustup.rs/) 环境。在本项目根目录执行：
-
+*Or install from source via Cargo:*
 ```bash
 cargo install --path .
 aglink db migrate
 ```
-*(注：后续发布到 crates.io 后可通过 `cargo install aglink` 安装)*
 
-### 3. 各平台环境配置
-
-#### 🐧 Linux
-Linux 使用 Rust 标准库创建原生符号链接；阶段 8 已在本机 Ubuntu WSL2 环境验证该路径。
-
-#### 🍎 macOS
-macOS 与 Linux 共用 Unix 标准库符号链接代码路径，但当前暂未取得 macOS 实机验证结果。发布说明中应保持这一限制，不把 macOS 标为已验证平台。
-
-#### 🪟 Windows (特别说明)
-在 Windows 系统下，创建符号链接默认需要管理员权限。为了保证安全与自动化流程的顺畅，**Windows 用户必须安装配套的 Broker 服务**。
-
-Windows Release 包会携带固定版本的 `WinSymlinksBroker` 运行时。推荐使用 `aglink-installer.ps1` 一次完成 `aglink` 安装、Broker 检测与必要的服务安装。Agent Linker 默认通过安全的本地 IPC 与该 Broker 服务通信。阶段 8 已验证 Windows 默认 backend 为 `windows-broker`，不会先直接创建再自动 fallback。
-
-## 🚀 Quick Start (快速开始)
-
-源码安装或手工解压后，先运行 `aglink db migrate`；安装脚本和 portable 包已完成初始化。然后初始化项目并查看 Harness 定义：
+### 2. Common Workflow
 
 ```bash
+# 1. Initialize project structure (.agents/, AGENTS.md, .gitignore)
 aglink init
-aglink harness list
-aglink harness show claude
+
+# 2. Register reusable skills & resources globally
+aglink skill add ~/my-skills/code-reviewer --name reviewer
+aglink resource add ~/docs/guidelines.md --target-dir docs
+
+# 3. Mount them into the current project
+aglink link reviewer
+aglink link guidelines
+
+# 4. Inspect status & verify health
+aglink status
+aglink doctor
 ```
 
-> **注意**: 完整命令使用方法与用途分类，请查阅详细的 [CLI Command Reference (命令行指南)](CLI_REFERENCE.md)。同时，也可通过 `aglink --help` 随时获取内建帮助。
+---
 
-日常使用普通用户身份。Agent 的持久化写操作默认经宿主授权在沙箱外执行；已初始化数据库的只读查询和链接 dry-run 可在沙箱内执行。权限不足时 CLI 明确失败，不自行解除沙箱。正常 Windows 安装从有效 receipt 和 exe 布局定位数据库；显式设置不同的 `AGLINK_DATA_DIR` 会主动切换数据配置。其他安装形态跨入口使用时应显式统一该目录。`aglink db path` 可检查实际目标；普通读写均不会自动建库或迁移；显式 `aglink db migrate` 升级到 Schema v3，保留旧 ID 和引用。`db check` 验证五表和 SQLite 完整性，不健康返回非零。
+## 📚 Documentation & Reference
 
-## 📖 Architecture & Contract (架构与契约)
+Agent Linker maintains comprehensive design and operational documentation. Direct links to relevant resources:
 
-项目的设计理念与模块拆分严格遵循了以下原则。对于开发与贡献者，核心的 Acceptance Criteria (验收标准) 请参阅 `dev-docs/architecture.md`。
+| Topic | Documentation | Highlights |
+| :--- | :--- | :--- |
+| **CLI Usage** | **[CLI Reference](CLI_REFERENCE.md)** ([中文版](CLI_REFERENCE_zh.md)) | Full command surface (`init`, `link`, `unlink`, `skill`, `resource`, `group`, `harness`, `db`, `doctor`), resolution rules, and flags. |
+| **Architecture** | **[Architecture Navigation](dev-docs/architecture.md)** | Design boundaries, module responsibilities, dependency rules, and single source of truth. |
+| **Symlink Engine** | **[Symlink Core](dev-docs/modules/01-symlink-core.md)** | Cross-platform abstraction, Windows Broker IPC, conflict handling, and error models. |
+| **Project Manifest** | **[Init & Manifest](dev-docs/modules/02-project-init-manifest.md)** | `.agents/links.toml` format, idempotent scaffolding, and `.gitignore` managed block. |
+| **Harness Adapters** | **[Harness Adapter](dev-docs/modules/03-harness-adapter.md)** | Mapping canonical `.agents/` structures to Claude Code and future harnesses. |
+| **Global Storage** | **[Global Store & Registry](dev-docs/modules/04-global-store-registry.md)** | SQLite Schema v4, transaction boundaries, migrations, and database resolution order. |
+| **Linkable Items** | **[Linkable Items](dev-docs/modules/05-linkable-item.md)** | Skills, Resources, source validation (`SKILL.md`), and default target paths. |
+| **Command Design** | **[CLI Command Surface](dev-docs/modules/06-cli-command-surface.md)** | User-facing behaviors, output modes (`--json`, `--quiet`), and exit codes. |
+| **Code Structure** | **[Architecture & Verification](dev-docs/modules/07-code-architecture-verification.md)** | Internal crate boundaries, invariants, and testing strategy. |
+| **Releases** | **[Release Checklist](RELEASE_CHECKLIST.md)** & **[Changelog](CHANGELOG.md)** | Verification steps, distribution packaging, and version history. |
 
-### Key Terms (关键术语)
-- **Symlink**: 操作系统级符号链接，非快捷方式，非硬链接。
-- **Agent Skill**: 按用途命名的目录，包含 AI Agent 可使用的提示词、脚本或文档等资源。
-- **Harness**: 运行 Agent 的软件系统，如 Claude Code；`aglink harness` 管理兼容路径与适配设置，不启动或停止该工具。旧 `framework` 命令已移除。
-- **Linkable Item**: Skill 与 Resource 的统一抽象，是工具管理的基本链接单元。
+---
 
-### 核心模块
-- **Symlink Core**: 封装操作系统差异，保障创建与销毁的幂等性。
-- **Global Store & Registry**: 全局 SQLite 状态存储。
-- **CLI Command Surface**: 用户交互边界，输出结构化诊断信息。
+## 🛠️ Contributing
+
+Contributions are welcome! Please make sure changes conform to the architectural guidelines in [Architecture Navigation](dev-docs/architecture.md).
+
+Run test suites before submitting PRs:
+```bash
+cargo test --locked
+```
+
+---
+
+## 📄 License
+
+Dual-licensed under either of:
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT License ([LICENSE-MIT](LICENSE-MIT))
+
+at your option.

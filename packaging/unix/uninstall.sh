@@ -17,6 +17,7 @@ if [ "$PURGE" = "1" ]; then
   rm -f "$DATA_DIR/agent-linker.db" \
         "$DATA_DIR/agent-linker.db-shm" \
         "$DATA_DIR/agent-linker.db-wal" \
+        "$DATA_DIR/.aglink-cli-configured" \
         "$DATA_DIR/config.toml"
   rmdir "$DATA_DIR" 2>/dev/null || true
 fi

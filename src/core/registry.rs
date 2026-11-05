@@ -51,6 +51,36 @@ pub struct GroupUpdateReport {
     pub skipped: Vec<String>,
 }
 impl Store {
+    pub fn list_init_items(&self) -> Result<Vec<LinkableItem>> {
+        let mut statement = self.connection().prepare(
+            "SELECT i.id, i.kind, i.name, i.alias, i.source_path, i.source_kind,
+                    i.target_dir, i.description, i.created_at, i.updated_at, i.default_link_name
+             FROM linkable_items i JOIN init_items d ON d.item_id = i.id ORDER BY i.name",
+        )?;
+        let rows = statement.query_map([], item_from_row)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Error::from)
+    }
+
+    pub fn add_init_item(&self, identifier: &str) -> Result<LinkableItem> {
+        self.write(|connection| {
+            let item = find_any_item_with_connection(connection, identifier)?;
+            connection.execute(
+                "INSERT INTO init_items(item_id) VALUES (?1) ON CONFLICT(item_id) DO NOTHING",
+                [&item.id],
+            )?;
+            Ok(item)
+        })
+    }
+
+    pub fn remove_init_item(&self, identifier: &str) -> Result<LinkableItem> {
+        self.write(|connection| {
+            let item = find_any_item_with_connection(connection, identifier)?;
+            connection.execute("DELETE FROM init_items WHERE item_id = ?1", [&item.id])?;
+            Ok(item)
+        })
+    }
+
     pub fn add_item(&self, request: AddLinkableItem) -> Result<LinkableItem> {
         self.write(|c| add_item_with_connection(c, request))
     }

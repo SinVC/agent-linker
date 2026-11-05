@@ -28,6 +28,16 @@ Windows archive contents must not include `LICENSES/` or
 `THIRD_PARTY_NOTICES.md`. Version metadata belongs in `install-receipt.json`;
 do not add a separate `VERSION.json`.
 
+Windows and Linux archives include the complete repository `skills/` tree.
+Normal installers copy it to the resolved data directory's `skills/`, then register
+`aglink-cli` and add it to `init defaults` through CLI commands. Rust initialization
+and migrations contain no bundled-skill name or source-path defaults.
+The data marker `.aglink-cli-configured` is written only after successful first
+configuration. Upgrades refresh the same registered source without changing its ID
+or restoring a user-removed default. A same-name registration from another source
+fails explicitly and is preserved. Default uninstall retains skills and the marker;
+purge removes the marker with the database, retaining skill files and unknown content.
+
 ## Windows Broker Runtime
 
 `WinSymlinksBroker` is a required Windows runtime dependency. Windows packages
@@ -70,6 +80,11 @@ only when the target is absent, preserves the source, then runs `db migrate` and
 `db check` with checked exit codes. It temporarily sets `AGLINK_DATA_DIR` to the
 explicit source/target and restores it in `finally`; user overrides are not changed.
 Existing targets are validated and never overwritten. `doctor` is diagnostic only.
+For local installation verification, `-PackagePath <zip> -Version <exact-version>`
+uses that archive and its adjacent `.sha256` instead of downloading release assets.
+`-SkipDatabaseSnapshot` skips only the temporary validation snapshot of an existing
+target database; explicit migration and post-migration `db check` still run. Legacy
+database import, when needed, remains a consistent snapshot into the target.
 An already-elevated outer process is not evidence of ordinary-user ACL correctness.
 Reuse an installed Broker without replacing files that its service may be using.
 
@@ -77,12 +92,19 @@ Reuse an installed Broker without replacing files that its service may be using.
 
 Portable Windows archives include an initialized `agent-linker.db` next to `aglink.exe`.
 This enables the existing portable database path resolution.
-Packaging explicitly sets the staging data directory for `db migrate`, producing a schema v3 database usable by the first ordinary query. Normal install/upgrade runs explicit migrate and check; a nonhealthy check returns nonzero and stops installation success. Unix
+Packaging explicitly sets the staging data directory for `db migrate`, producing a schema v4 database usable by the first ordinary query. Normal install/upgrade runs explicit migrate and check; a nonhealthy check returns nonzero and stops installation success. Unix
 installers initialize and check the database; source/manual installs must run
 `aglink db migrate` before queries.
 
 Portable mode controls the Agent Linker database location only. Windows
 symlink operations still require the machine-level `WinSymlinksBroker` service.
+
+After extracting a portable package to its final location, run
+`powershell -ExecutionPolicy Bypass -File scripts/setup-portable.ps1` to register
+the bundled skills and configure init defaults. Packaging leaves the Registry empty
+so no build-machine absolute paths enter the archive. Registration uses absolute
+paths; moving the extracted directory later requires unregistering the old source
+and registering/configuring the new location explicitly.
 
 ## Uninstall Modes
 

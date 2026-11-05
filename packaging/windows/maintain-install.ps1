@@ -18,7 +18,7 @@ function Assert-PlainDirectory([string] $Path) {
 
 function Remove-KnownDatabase([string] $Directory) {
     Assert-PlainDirectory $Directory
-    foreach ($name in @('agent-linker.db', 'agent-linker.db-journal', 'agent-linker.db-wal', 'agent-linker.db-shm')) {
+    foreach ($name in @('agent-linker.db', 'agent-linker.db-journal', 'agent-linker.db-wal', 'agent-linker.db-shm', '.aglink-cli-configured')) {
         $file = Join-Path $Directory $name
         if (Test-Path -LiteralPath $file -PathType Leaf) { Remove-Item -LiteralPath $file -Force }
     }

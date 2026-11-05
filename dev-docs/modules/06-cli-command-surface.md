@@ -22,6 +22,9 @@
 
 ```text
 aglink init
+aglink init defaults list
+aglink init defaults add <item>
+aglink init defaults remove <item>
 aglink db ...
 aglink harness ...
 aglink skill ...
@@ -142,6 +145,7 @@ aglink doctor
 - Harness 指 Claude Code 等 Agent 运行系统，`harness` 管理其兼容路径与全局适配设置，不启停工具进程。
 - `init` 只读消费已启用 Harness 映射；缺库使用内置 Claude 默认映射，不隐式初始化全局库。其他存储错误正常返回。
 - `link` 根据 Registry 中的 Linkable Item 类型决定链接目标。
+- `init` 依次建立基础结构、Harness 兼容链接、默认注册项链接。`init defaults` 管理全局 Skill/Resource 默认项，不操作当前项目；接受注册名称或 ID，配置按稳定 ID 关联。
 - `--as` 只覆盖本次链接名，不修改 Registry alias。
 - `--target-dir` 只用于 Resource 的本次链接目标覆盖。
 - `--force` 以有效且类型匹配的新 source 替换错误目标或旧目标已缺失的 symlink；由 Provider 替换，不先删后建，不允许删除真实文件或目录。

@@ -18,7 +18,8 @@
 - 项目 manifest 不记录全局 Registry 或 Harness 设置。
 - MVP 不引入项目级配置文件。
 - SQLite schema 必须版本化 migration。
-- Schema v3 使用 `harnesses`、`harness_mappings`、`linkable_items`、`groups`、`group_items` 五张表；删除 config 表和未消费的预留字段。升级保留全部 ID、成员引用、启用标记、自定义映射与时间。
+- Schema v4 使用 `harnesses`、`harness_mappings`、`linkable_items`、`groups`、`group_items`、`init_items` 六张表；不使用通用 config 表。升级保留全部 ID、成员引用、启用标记、自定义映射与时间。
+- v3→v4 只新增 `init_items(item_id)`，外键关联 Registry，注册项删除时级联清理。迁移不注入默认技能；安装脚本负责注册随包技能及首次设置默认项。
 
 ## 接口契约
 
@@ -56,7 +57,7 @@ SQLite 保存：
 - name 跨 Skill/Resource 大小写无关唯一；Skill default_link_name 唯一，Resource 按归一 `(target_dir, default_link_name)` 唯一；Group name 唯一。依赖 SQLite 约束，不做重复唯一性预查。
 - 新 Item/Group 使用 itm_<16hex>/grp_<16hex> 随机 ID。group add/remove 按 item_id 去重；add 已有成员跳过并提示，未知项仍失败，整批写入原子提交。
 - group list 只用单条 LEFT JOIN/COUNT/GROUP BY 查询 id、name、成员数；show/link/unlink 加载完整成员。
-- 查询和项目链接流程对全局库只读，不创建、迁移或 seed；缺库/旧 schema 提示 `db migrate`，新 schema 提示升级程序。`db check` 独立观察 schema，检查五表及 quick_check，再用不带 CREATE 的连接探测可写性；不建库。状态区分 Missing、SchemaMismatch、ReadOnly、LockedBusy、HealthyWritable 与结构/完整性错误 Invalid，只有 HealthyWritable 返回成功。行数不决定健康。
+- 查询和项目链接流程对全局库只读，不创建、迁移或 seed；缺库/旧 schema 提示 `db migrate`，新 schema 提示升级程序。`db check` 独立观察 schema，检查六表及 quick_check，再用不带 CREATE 的连接探测可写性；不建库。状态区分 Missing、SchemaMismatch、ReadOnly、LockedBusy、HealthyWritable 与结构/完整性错误 Invalid，只有 HealthyWritable 返回成功。行数不决定健康。
 - 备份只读打开已有源库并生成 SQLite 一致快照，包含已提交 WAL 数据，保留源 schema，不覆盖已有目标；仅正常 Windows 安装默认写入安装根的 `backups/`，其余形态保留数据库同目录默认值。
 - 当前项目链接状态只保存在 `.agents/links.toml`。
 

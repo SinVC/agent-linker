@@ -29,6 +29,7 @@ core 模块职责：
 - `manifest`：serde + toml 清单读写、兼容读取、schema/业务校验、原子保存及 init；后端审计字符串不参与 Provider 选择。
 - `project_links`：基于 ProjectCtx 的 link_item、link_group、status、unlink、unlink_group、clean 唯一用例入口，复用传入 Store；共享 LinkPlan 读取一次清单、整批预检、执行后一次保存，dry-run 使用同一计划。
 - `doctor`：独立诊断编排，直接消费 Store check 结构化状态并执行 Windows Broker 探测。
+- init 的 Harness 与默认注册项阶段分别复用同一 LinkPlan 执行能力；来源与 manifest 保留 Harness/Item 身份及各自路径约束，不新增 Linkable Item 类型。
 - `store`：统一 Store 的只读/读写入口、显式 migration、backup 和数据库诊断；普通业务不能隐式初始化。
 - `registry`：Store 上的 Linkable Item/Group 持久化访问和事务，group list 用聚合摘要。
 - `harness`：Store 上的 Harness Adapter、mapping 与唯一 builtin_harnesses 内置定义；Seed 只由 Store 显式迁移消费。
