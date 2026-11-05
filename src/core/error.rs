@@ -205,8 +205,16 @@ mod tests {
     fn error_type_layout_sizes_are_documented() {
         #[cfg(target_pointer_width = "64")]
         {
-            assert_eq!(std::mem::size_of::<Error>(), 144);
-            assert_eq!(std::mem::size_of::<SymlinkError>(), 144);
+            #[cfg(windows)]
+            {
+                assert_eq!(std::mem::size_of::<Error>(), 144);
+                assert_eq!(std::mem::size_of::<SymlinkError>(), 144);
+            }
+            #[cfg(not(windows))]
+            {
+                assert_eq!(std::mem::size_of::<Error>(), 128);
+                assert_eq!(std::mem::size_of::<SymlinkError>(), 128);
+            }
             assert_eq!(std::mem::size_of::<rusqlite::Error>(), 64);
         }
     }

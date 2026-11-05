@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-REPO="${REPO:-winddxr/agent-linker}"
+REPO="${REPO:-SinVC/agent-linker}"
 VERSION="${VERSION:-latest}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 

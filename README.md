@@ -4,7 +4,7 @@
 
 **Manage AI Agent instructions, skills, and resources across projects with safe, controlled symbolic links.**
 
-[![Release](https://img.shields.io/github/v/release/winddxr/agent-linker?color=blue)](https://github.com/winddxr/agent-linker/releases)
+[![Release](https://img.shields.io/github/v/release/SinVC/agent-linker?color=blue)](https://github.com/SinVC/agent-linker/releases)
 [![Rust](https://img.shields.io/badge/rust-2021%20edition-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-green.svg)](LICENSE-MIT)
 [![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20macos-lightgrey.svg)]()
@@ -48,12 +48,12 @@ Modern AI coding agents (Claude Code, Cursor, Antigravity, Windsurf) rely heavil
 
 **Linux / macOS:**
 ```bash
-curl -fsSL https://github.com/winddxr/agent-linker/releases/latest/download/aglink-installer.sh | sh
+curl -fsSL https://github.com/SinVC/agent-linker/releases/latest/download/aglink-installer.sh | sh
 ```
 
 **Windows (PowerShell):**
 ```powershell
-irm https://github.com/winddxr/agent-linker/releases/latest/download/aglink-installer.ps1 | iex
+irm https://github.com/SinVC/agent-linker/releases/latest/download/aglink-installer.ps1 | iex
 ```
 
 *Or install from source via Cargo:*

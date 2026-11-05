@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string] $Version = "latest",
-    [string] $Repo = "winddxr/agent-linker",
+    [string] $Repo = "SinVC/agent-linker",
     [string] $InstallDir = "",
     [string] $PackagePath = "",
     [switch] $SkipDatabaseSnapshot,

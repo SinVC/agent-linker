@@ -132,11 +132,11 @@ Script source lives under `packaging/`. The user-facing one-line install
 commands should download scripts from release assets:
 
 ```powershell
-irm https://github.com/winddxr/agent-linker/releases/latest/download/aglink-installer.ps1 | iex
+irm https://github.com/SinVC/agent-linker/releases/latest/download/aglink-installer.ps1 | iex
 ```
 
 ```bash
-curl -fsSL https://github.com/winddxr/agent-linker/releases/latest/download/aglink-installer.sh | sh
+curl -fsSL https://github.com/SinVC/agent-linker/releases/latest/download/aglink-installer.sh | sh
 ```
 
 Do not point user installation commands at the `main` branch.
